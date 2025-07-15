@@ -1,4 +1,3 @@
-
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
@@ -18,7 +17,8 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-app.post('/upload', upload.single('photo'), async (req, res) => {
+// --- FIX: Changed 'photo' to 'dishImage' to match the frontend request ---
+app.post('/upload', upload.single('dishImage'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
   const bufferStream = new Readable();
