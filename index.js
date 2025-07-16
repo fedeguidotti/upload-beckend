@@ -2,14 +2,27 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
+const sharp = require('sharp');
 const { Readable } = require('stream');
-const sharp = require('sharp'); // Importa la libreria per la compressione
+const admin = require('firebase-admin');
+const bcrypt = require('bcryptjs');
 
 require('dotenv').config();
 
+// --- CONFIGURAZIONE FIREBASE ADMIN ---
+try {
+    const serviceAccount = require('./firebase-service-account.json');
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+} catch (error) {
+    console.error("ERRORE: File 'firebase-service-account.json' non trovato o non valido. Scaricalo dalla tua console Firebase.");
+    process.exit(1);
+}
+const db = admin.firestore();
+
 const app = express();
-// Aumenta il limite di dimensione del file per multer, se necessario
-const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } }); // Limite di 10MB
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 app.use(cors());
 app.use(express.json());
@@ -20,66 +33,148 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// --- ROTTA DI UPLOAD AGGIORNATA CON COMPRESSIONE ---
-app.post('/upload', upload.single('dishImage'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
-  }
+// --- FUNZIONE HELPER ---
+const uploadToCloudinary = (fileBuffer, folder) => {
+    return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream({ folder }, (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+        });
+        const bufferStream = new Readable();
+        bufferStream.push(fileBuffer);
+        bufferStream.push(null);
+        bufferStream.pipe(stream);
+    });
+};
 
-  try {
-    let fileBuffer = req.file.buffer;
+// --- ROTTE RISTORATORE ---
 
-    // Controlla se il file è più grande di 2MB (2 * 1024 * 1024 bytes)
-    if (req.file.size > 2 * 1024 * 1024) {
-      console.log(`Compressing image, original size: ${req.file.size / 1024} KB`);
-      // Comprimi l'immagine usando sharp
-      fileBuffer = await sharp(fileBuffer)
-        .resize({ width: 1200, withoutEnlargement: true }) // Ridimensiona a max 1200px di larghezza
-        .jpeg({ quality: 80 }) // Comprimi in JPEG con qualità 80%
-        .toBuffer();
-      console.log(`Compressed size: ${fileBuffer.length / 1024} KB`);
+app.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email e password sono obbligatorie.' });
+    try {
+        const snapshot = await db.collection('ristoranti').where('email', '==', email).limit(1).get();
+        if (snapshot.empty) return res.status(401).json({ error: 'Credenziali non valide.' });
+        
+        const restaurantDoc = snapshot.docs[0];
+        const restaurantData = restaurantDoc.data();
+        const isPasswordCorrect = await bcrypt.compare(password, restaurantData.password);
+
+        if (!isPasswordCorrect) return res.status(401).json({ error: 'Credenziali non valide.' });
+
+        res.json({ 
+          success: true, 
+          docId: restaurantDoc.id, // Invia anche il docId
+          restaurantId: restaurantData.restaurantId,
+          nomeRistorante: restaurantData.nomeRistorante,
+          logoUrl: restaurantData.logoUrl || null
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Errore interno del server.' });
     }
+});
 
-    const bufferStream = new Readable();
-    bufferStream.push(fileBuffer);
-    bufferStream.push(null);
+app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
+    const { docId } = req.params;
+    const { nomeRistorante } = req.body;
+    
+    try {
+        const docRef = db.collection('ristoranti').doc(docId);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
 
-    const stream = cloudinary.uploader.upload_stream(
-      { folder: "uploads" },
-      (error, result) => {
-        if (error) {
-          console.error("Cloudinary Upload Error:", error);
-          return res.status(500).json({ error: 'Error uploading to Cloudinary' });
+        const updateData = { nomeRistorante };
+
+        if (req.file) {
+            const oldData = docSnap.data();
+            if (oldData.logoUrl) {
+                const publicId = 'logos/' + oldData.logoUrl.split('/logos/')[1].split('.')[0];
+                await cloudinary.uploader.destroy(publicId);
+            }
+            const result = await uploadToCloudinary(req.file.buffer, 'logos');
+            updateData.logoUrl = result.secure_url;
         }
-        res.json({ url: result.secure_url });
-      }
-    );
 
-    bufferStream.pipe(stream);
+        await docRef.update(updateData);
+        res.json({ success: true, message: 'Dati aggiornati!', updatedData: updateData });
 
-  } catch (error) {
-    console.error('Error processing image:', error);
-    res.status(500).json({ error: 'Failed to process image' });
-  }
+    } catch (error) {
+        res.status(500).json({ error: 'Errore durante l\'aggiornamento.' });
+    }
 });
 
-app.post('/delete-image', async (req, res) => {
-  const { photoUrl } = req.body;
-  if (!photoUrl) {
-    return res.status(400).json({ error: 'Image URL is required' });
-  }
-  try {
-    const publicIdWithFolder = photoUrl.split('/image/upload/')[1].split('/').slice(1).join('/').split('.')[0];
-    const result = await cloudinary.uploader.destroy(publicIdWithFolder);
-    res.json({ message: 'Image deletion process initiated', details: result });
-  } catch (error) {
-    console.error('Error deleting image:', error);
-    res.status(500).json({ error: 'Failed to delete image' });
-  }
+// --- ROTTE ADMIN ---
+
+app.get('/restaurants', async (req, res) => {
+    try {
+        const snapshot = await db.collection('ristoranti').get();
+        const restaurants = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        res.json(restaurants);
+    } catch (error) {
+        res.status(500).json({ error: 'Impossibile recuperare i ristoranti.' });
+    }
 });
 
-app.get('/', (req, res) => {
-  res.send('Backend per upload immagini su Cloudinary è attivo!');
+app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
+    const { nomeRistorante, email, password } = req.body;
+    if (!nomeRistorante || !email || !password) return res.status(400).json({ error: 'Dati mancanti.' });
+    try {
+        let logoUrl = null;
+        if (req.file) {
+            const result = await uploadToCloudinary(req.file.buffer, 'logos');
+            logoUrl = result.secure_url;
+        }
+        const salt = bcrypt.genSaltSync(10);
+        const hashedPassword = bcrypt.hashSync(password, salt);
+        const restaurantId = nomeRistorante.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString().slice(-5);
+
+        await db.collection('ristoranti').add({
+            nomeRistorante, email, password: hashedPassword, restaurantId, logoUrl
+        });
+        res.status(201).json({ message: 'Ristorante creato con successo.' });
+    } catch (error) {
+        res.status(500).json({ error: 'Errore nella creazione del ristorante.' });
+    }
+});
+
+app.delete('/delete-restaurant/:docId', async (req, res) => {
+    const { docId } = req.params;
+    try {
+        const restoDoc = await db.collection('ristoranti').doc(docId).get();
+        if (!restoDoc.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
+        
+        const restaurantData = restoDoc.data();
+        const restaurantId = restaurantData.restaurantId;
+
+        if (restaurantData.logoUrl) {
+            const publicId = 'logos/' + restaurantData.logoUrl.split('/logos/')[1].split('.')[0];
+            await cloudinary.uploader.destroy(publicId);
+        }
+
+        const menuSnapshot = await db.collection(`ristoranti/${restaurantId}/menu`).get();
+        const dishImagePublicIds = [];
+        menuSnapshot.forEach(doc => {
+            const photoUrl = doc.data().photoUrl;
+            if (photoUrl && photoUrl.includes('cloudinary')) {
+                const folder = photoUrl.includes('/dishes/') ? 'dishes' : 'uploads';
+                const publicId = folder + '/' + photoUrl.split(`/${folder}/`)[1].split('.')[0];
+                dishImagePublicIds.push(publicId);
+            }
+        });
+        if (dishImagePublicIds.length > 0) await cloudinary.api.delete_resources(dishImagePublicIds);
+
+        const path = `ristoranti/${restaurantId}`;
+        const collections = await db.collection(path).listCollections();
+        for (const collection of collections) {
+            await db.recursiveDelete(collection);
+        }
+        await db.collection('ristoranti').doc(docId).delete();
+
+        res.json({ message: 'Ristorante e tutti i dati associati eliminati.' });
+    } catch (error) {
+        console.error("ERRORE ELIMINAZIONE:", error);
+        res.status(500).json({ error: 'Errore durante l\'eliminazione completa.' });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
