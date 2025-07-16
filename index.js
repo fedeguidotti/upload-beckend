@@ -164,9 +164,9 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
         });
         if (dishImagePublicIds.length > 0) await cloudinary.api.delete_resources(dishImagePublicIds).catch(err => console.warn("Immagini non trovate"));
 
-        await deleteCollection(db, `ristoranti/${restaurantId}/menu`, 50);
-        await deleteCollection(db, `ristoranti/${restaurantId}/menuCategories`, 50);
-        await deleteCollection(db, `ristoranti/${restaurantId}/tavoli`, 50);
+        await deleteCollection(db, `ristoranti/${restaurantId}/menu`);
+        await deleteCollection(db, `ristoranti/${restaurantId}/menuCategories`);
+        await deleteCollection(db, `ristoranti/${restaurantId}/tavoli`);
         
         await db.collection('ristoranti').doc(docId).delete();
 
@@ -215,3 +215,4 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server attivo su http://localhost:${PORT}`));
+
