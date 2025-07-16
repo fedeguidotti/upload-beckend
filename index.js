@@ -132,6 +132,7 @@ app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req,
     }
 });
 
+
 // --- ROTTE ADMIN ---
 
 app.get('/restaurants', async (req, res) => {
