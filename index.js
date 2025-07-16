@@ -10,15 +10,19 @@ const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 // --- CONFIGURAZIONE FIREBASE ADMIN ---
-// Assicurati di avere il file 'firebase-service-account.json' nella stessa cartella
-const serviceAccount = require('./firebase-service-account.json');
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+try {
+    const serviceAccount = require('./firebase-service-account.json');
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+} catch (error) {
+    console.error("ERRORE: File 'firebase-service-account.json' non trovato o non valido. Assicurati che sia configurato come Secret File su Render.com.");
+    process.exit(1);
+}
 const db = admin.firestore();
 
 const app = express();
-const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 app.use(cors());
 app.use(express.json());
@@ -29,24 +33,73 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// --- ROTTE PUBBLICHE (PER DASHBOARD RISTORANTE) ---
+// --- FUNZIONE HELPER ---
+const uploadToCloudinary = (fileBuffer, folder) => {
+    return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream({ folder }, (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+        });
+        const bufferStream = new Readable();
+        bufferStream.push(fileBuffer);
+        bufferStream.push(null);
+        bufferStream.pipe(stream);
+    });
+};
 
-app.post('/upload', upload.single('dishImage'), async (req, res) => {
-    // ... (codice invariato)
-});
+// Funzione helper per cancellare una collezione
+async function deleteCollection(db, collectionPath) {
+    const collectionRef = db.collection(collectionPath);
+    const snapshot = await collectionRef.limit(500).get();
 
-app.post('/delete-image', async (req, res) => {
-    // ... (codice invariato)
-});
+    if (snapshot.size === 0) {
+        return;
+    }
 
-// --- ROTTE ADMIN (PER GESTIONE RISTORANTI) ---
+    const batch = db.batch();
+    snapshot.docs.forEach(doc => {
+        batch.delete(doc.ref);
+    });
+    await batch.commit();
 
-// LOGIN RISTORATORE (già creato)
+    // Continua a cancellare ricorsivamente
+    await deleteCollection(db, collectionPath);
+}
+
+
+// --- ROTTE RISTORATORE ---
+
 app.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email e password sono obbligatorie.' });
+    try {
+        const snapshot = await db.collection('ristoranti').where('email', '==', email).limit(1).get();
+        if (snapshot.empty) return res.status(401).json({ error: 'Credenziali non valide.' });
+        
+        const restaurantDoc = snapshot.docs[0];
+        const restaurantData = restaurantDoc.data();
+        const isPasswordCorrect = await bcrypt.compare(password, restaurantData.password);
+
+        if (!isPasswordCorrect) return res.status(401).json({ error: 'Credenziali non valide.' });
+
+        res.json({ 
+          success: true, 
+          docId: restaurantDoc.id,
+          restaurantId: restaurantData.restaurantId,
+          nomeRistorante: restaurantData.nomeRistorante,
+          logoUrl: restaurantData.logoUrl || null
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
+
+app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
     // ... (codice invariato)
 });
 
-// GET: Ottieni la lista di tutti i ristoranti
+// --- ROTTE ADMIN ---
+
 app.get('/restaurants', async (req, res) => {
     try {
         const snapshot = await db.collection('ristoranti').get();
@@ -57,64 +110,53 @@ app.get('/restaurants', async (req, res) => {
     }
 });
 
-// POST: Crea un nuovo ristorante
-app.post('/create-restaurant', async (req, res) => {
-    const { nomeRistorante, email, password } = req.body;
-    if (!nomeRistorante || !email || !password) {
-        return res.status(400).json({ error: 'Dati mancanti.' });
-    }
-    try {
-        const salt = bcrypt.genSaltSync(10);
-        const hashedPassword = bcrypt.hashSync(password, salt);
-        const restaurantId = nomeRistorante.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString().slice(-5);
-
-        await db.collection('ristoranti').add({
-            nomeRistorante,
-            email,
-            password: hashedPassword,
-            restaurantId
-        });
-        res.status(201).json({ message: 'Ristorante creato con successo.' });
-    } catch (error) {
-        res.status(500).json({ error: 'Errore nella creazione del ristorante.' });
-    }
+app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
+    // ... (codice invariato)
 });
 
-// DELETE: Elimina un ristorante e tutti i suoi dati
+// DELETE: Rotta corretta per eliminare un ristorante e tutti i suoi dati
 app.delete('/delete-restaurant/:docId', async (req, res) => {
     const { docId } = req.params;
     try {
-        // 1. Ottieni l'ID del ristorante
         const restoDoc = await db.collection('ristoranti').doc(docId).get();
         if (!restoDoc.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
-        const restaurantId = restoDoc.data().restaurantId;
+        
+        const restaurantData = restoDoc.data();
+        const restaurantId = restaurantData.restaurantId;
 
-        // 2. Trova e cancella tutte le immagini su Cloudinary
+        // 1. Cancella logo da Cloudinary
+        if (restaurantData.logoUrl) {
+            const publicId = 'logos/' + restaurantData.logoUrl.split('/logos/')[1].split('.')[0];
+            await cloudinary.uploader.destroy(publicId).catch(err => console.warn("Logo non trovato o già cancellato:", err.message));
+        }
+
+        // 2. Cancella immagini piatti da Cloudinary
         const menuSnapshot = await db.collection(`ristoranti/${restaurantId}/menu`).get();
-        const publicIds = [];
+        const dishImagePublicIds = [];
         menuSnapshot.forEach(doc => {
             const photoUrl = doc.data().photoUrl;
             if (photoUrl && photoUrl.includes('cloudinary')) {
-                const publicId = 'uploads/' + photoUrl.split('/uploads/')[1].split('.')[0];
-                publicIds.push(publicId);
+                const folder = photoUrl.includes('/dishes/') ? 'dishes' : 'uploads';
+                const publicId = folder + '/' + photoUrl.split(`/${folder}/`)[1].split('.')[0];
+                dishImagePublicIds.push(publicId);
             }
         });
-
-        if (publicIds.length > 0) {
-            await cloudinary.api.delete_resources(publicIds);
+        if (dishImagePublicIds.length > 0) {
+            await cloudinary.api.delete_resources(dishImagePublicIds).catch(err => console.warn("Alcune immagini dei piatti non trovate:", err.message));
         }
 
-        // 3. Cancella ricorsivamente tutti i dati del ristorante su Firestore
-        const path = `ristoranti/${restaurantId}`;
-        await db.recursiveDelete(db.collection(path));
-
+        // 3. Cancella dati da Firestore (collezioni e sottocollezioni)
+        await deleteCollection(db, `ristoranti/${restaurantId}/menu`);
+        await deleteCollection(db, `ristoranti/${restaurantId}/menuCategories`);
+        await deleteCollection(db, `ristoranti/${restaurantId}/tavoli`);
+        
         // 4. Cancella il documento principale del ristorante
         await db.collection('ristoranti').doc(docId).delete();
 
-        res.json({ message: 'Ristorante e tutti i dati associati eliminati con successo.' });
+        res.json({ message: 'Ristorante e tutti i dati associati eliminati.' });
     } catch (error) {
         console.error("ERRORE ELIMINAZIONE:", error);
-        res.status(500).json({ error: 'Errore durante l\'eliminazione completa del ristorante.' });
+        res.status(500).json({ error: 'Errore durante l\'eliminazione completa.' });
     }
 });
 
