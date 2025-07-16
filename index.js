@@ -17,8 +17,9 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Questa riga si aspetta un campo chiamato 'photo'
-app.post('/upload', upload.single('photo'), async (req, res) => {
+// FIX: Ho cambiato 'photo' in 'dishImage' per corrispondere al frontend
+// e risolvere l'errore "Unexpected field".
+app.post('/upload', upload.single('dishImage'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
   const bufferStream = new Readable();
@@ -42,4 +43,3 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server attivo su http://localhost:${PORT}`));
-
