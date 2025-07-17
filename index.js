@@ -136,7 +136,6 @@ app.post('/update-restaurant-details/:docId', uploadLogo.single('logo'), async (
             updateData.logoUrl = result.secure_url;
         }
         await docRef.update(updateData);
-        // Restituisce i dati aggiornati per coerenza con il localStorage del frontend
         const finalData = (await docRef.get()).data();
         res.json({ success: true, message: 'Dati aggiornati!', updatedData: { nomeRistorante: finalData.nomeRistorante, logoUrl: finalData.logoUrl } });
     } catch (error) {
