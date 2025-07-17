@@ -2,12 +2,11 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary'); // <-- AGGIUNTO: Importazione necessaria
 const sharp = require('sharp');
 const { Readable } = require('stream');
 const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs');
-
-require('dotenv').config();
 
 try {
     const serviceAccount = require('./firebase-service-account.json');
@@ -21,17 +20,20 @@ try {
 const db = admin.firestore();
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
 app.use(express.json());
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
+// --- CONFIGURAZIONE CLOUDINARY (Uso le credenziali che hai fornito) ---
+cloudinary.config({ 
+  cloud_name: 'dyewzmvpa', 
+  api_key: '245647176451857', 
+  api_secret: 'cR-VWOp7lHX3kV6Wns_TuPm2MiM' 
 });
 
+
+// --- SETUP PER UPLOAD LOGHI (Il tuo codice originale, non viene toccato) ---
+const uploadLogo = multer({ storage: multer.memoryStorage() });
 const uploadToCloudinary = (fileBuffer, folder) => {
     return new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream({ folder }, (error, result) => {
@@ -41,6 +43,32 @@ const uploadToCloudinary = (fileBuffer, folder) => {
         Readable.from(fileBuffer).pipe(stream);
     });
 };
+
+
+// --- NUOVO SETUP SPECIFICO PER UPLOAD FOTO PIATTI ---
+const dishStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'dish_images', // Salva le foto dei piatti in una cartella separata
+    allowed_formats: ['jpeg', 'png', 'jpg'],
+    transformation: [{ width: 500, height: 500, crop: 'limit' }]
+  },
+});
+const uploadDish = multer({ storage: dishStorage });
+
+
+// --- NUOVA ROTTA PER GESTIRE L'UPLOAD DELLE FOTO DEI PIATTI ---
+// Chiamata dal file dashboard.html quando si aggiunge un piatto con foto.
+app.post('/upload-dish-image', uploadDish.single('dishImage'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'Nessun file caricato.' });
+  }
+  // Se il caricamento ha successo, Cloudinary ci dà l'URL dell'immagine
+  res.status(200).json({ url: req.file.path });
+});
+
+
+// --- IL RESTO DEL TUO CODICE (invariato) ---
 
 async function deleteCollection(db, collectionPath) {
     const collectionRef = db.collection(collectionPath);
@@ -79,7 +107,8 @@ app.post('/login', async (req, res) => {
     }
 });
 
-app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
+// Uso 'uploadLogo' per distinguere dall'upload dei piatti
+app.post('/update-restaurant-details/:docId', uploadLogo.single('logo'), async (req, res) => {
     const { docId } = req.params;
     const { nomeRistorante } = req.body;
     try {
@@ -116,7 +145,8 @@ app.get('/restaurants', async (req, res) => {
     }
 });
 
-app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
+// Uso 'uploadLogo' per distinguere dall'upload dei piatti
+app.post('/create-restaurant', uploadLogo.single('logo'), async (req, res) => {
     const { nomeRistorante, username, password } = req.body;
     if (!nomeRistorante || !username || !password) return res.status(400).json({ error: 'Dati mancanti.' });
     try {
@@ -157,7 +187,8 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
         menuSnapshot.forEach(doc => {
             const photoUrl = doc.data().photoUrl;
             if (photoUrl && photoUrl.includes('cloudinary')) {
-                const folder = photoUrl.includes('/dishes/') ? 'dishes' : 'uploads';
+                // Modificato per gestire la nuova cartella 'dish_images'
+                const folder = photoUrl.includes('/dish_images/') ? 'dish_images' : 'uploads';
                 const publicId = folder + '/' + photoUrl.split(`/${folder}/`)[1].split('.')[0];
                 dishImagePublicIds.push(publicId);
             }
@@ -176,7 +207,8 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
     }
 });
 
-app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, res) => {
+// Uso 'uploadLogo' per distinguere dall'upload dei piatti
+app.post('/update-restaurant-admin/:docId', uploadLogo.single('logo'), async (req, res) => {
     const { docId } = req.params;
     const { nomeRistorante, username, password } = req.body;
     
@@ -210,9 +242,8 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
 
 
 app.get('/', (req, res) => {
-  res.send('Backend per upload immagini su Cloudinary è attivo!');
+  res.send('Backend per Ristoranti Attivo!');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server attivo su http://localhost:${PORT}`));
-
