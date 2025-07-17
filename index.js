@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary'); // <-- AGGIUNTO: Importazione necessaria
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const sharp = require('sharp');
 const { Readable } = require('stream');
 const admin = require('firebase-admin');
@@ -24,7 +24,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- CONFIGURAZIONE CLOUDINARY (Uso le credenziali che hai fornito) ---
+// --- CONFIGURAZIONE CLOUDINARY ---
 cloudinary.config({ 
   cloud_name: 'dyewzmvpa', 
   api_key: '245647176451857', 
@@ -32,7 +32,7 @@ cloudinary.config({
 });
 
 
-// --- SETUP PER UPLOAD LOGHI (Il tuo codice originale, non viene toccato) ---
+// --- SETUP PER UPLOAD LOGHI ---
 const uploadLogo = multer({ storage: multer.memoryStorage() });
 const uploadToCloudinary = (fileBuffer, folder) => {
     return new Promise((resolve, reject) => {
@@ -45,11 +45,11 @@ const uploadToCloudinary = (fileBuffer, folder) => {
 };
 
 
-// --- NUOVO SETUP SPECIFICO PER UPLOAD FOTO PIATTI ---
+// --- SETUP PER UPLOAD FOTO PIATTI ---
 const dishStorage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
-    folder: 'dish_images', // Salva le foto dei piatti in una cartella separata
+    folder: 'dish_images',
     allowed_formats: ['jpeg', 'png', 'jpg'],
     transformation: [{ width: 500, height: 500, crop: 'limit' }]
   },
@@ -58,13 +58,22 @@ const uploadDish = multer({ storage: dishStorage });
 
 
 // --- NUOVA ROTTA PER GESTIRE L'UPLOAD DELLE FOTO DEI PIATTI ---
-// Chiamata dal file dashboard.html quando si aggiunge un piatto con foto.
 app.post('/upload-dish-image', uploadDish.single('dishImage'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Nessun file caricato.' });
   }
-  // Se il caricamento ha successo, Cloudinary ci dà l'URL dell'immagine
   res.status(200).json({ url: req.file.path });
+});
+
+// --- NUOVA ROTTA PER RECUPERARE I DATI DI UTILIZZO DI CLOUDINARY ---
+app.get('/cloudinary-usage', async (req, res) => {
+    try {
+        const usage = await cloudinary.api.usage();
+        res.status(200).json(usage);
+    } catch (error) {
+        console.error("Errore nel recuperare i dati di utilizzo di Cloudinary:", error);
+        res.status(500).json({ error: "Impossibile recuperare i dati di utilizzo." });
+    }
 });
 
 
@@ -107,7 +116,6 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// Uso 'uploadLogo' per distinguere dall'upload dei piatti
 app.post('/update-restaurant-details/:docId', uploadLogo.single('logo'), async (req, res) => {
     const { docId } = req.params;
     const { nomeRistorante } = req.body;
@@ -145,7 +153,6 @@ app.get('/restaurants', async (req, res) => {
     }
 });
 
-// Uso 'uploadLogo' per distinguere dall'upload dei piatti
 app.post('/create-restaurant', uploadLogo.single('logo'), async (req, res) => {
     const { nomeRistorante, username, password } = req.body;
     if (!nomeRistorante || !username || !password) return res.status(400).json({ error: 'Dati mancanti.' });
@@ -187,7 +194,6 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
         menuSnapshot.forEach(doc => {
             const photoUrl = doc.data().photoUrl;
             if (photoUrl && photoUrl.includes('cloudinary')) {
-                // Modificato per gestire la nuova cartella 'dish_images'
                 const folder = photoUrl.includes('/dish_images/') ? 'dish_images' : 'uploads';
                 const publicId = folder + '/' + photoUrl.split(`/${folder}/`)[1].split('.')[0];
                 dishImagePublicIds.push(publicId);
@@ -207,7 +213,6 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
     }
 });
 
-// Uso 'uploadLogo' per distinguere dall'upload dei piatti
 app.post('/update-restaurant-admin/:docId', uploadLogo.single('logo'), async (req, res) => {
     const { docId } = req.params;
     const { nomeRistorante, username, password } = req.body;
