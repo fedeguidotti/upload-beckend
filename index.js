@@ -32,7 +32,7 @@ cloudinary.config({
 });
 
 
-// --- SETUP PER UPLOAD LOGHI ---
+// --- SETUP PER UPLOAD LOGHI (Il tuo codice originale) ---
 const uploadLogo = multer({ storage: multer.memoryStorage() });
 const uploadToCloudinary = (fileBuffer, folder) => {
     return new Promise((resolve, reject) => {
@@ -45,7 +45,7 @@ const uploadToCloudinary = (fileBuffer, folder) => {
 };
 
 
-// --- SETUP PER UPLOAD FOTO PIATTI ---
+// --- SETUP SPECIFICO PER UPLOAD FOTO PIATTI (Aggiunto e Corretto) ---
 const dishStorage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
@@ -57,7 +57,7 @@ const dishStorage = new CloudinaryStorage({
 const uploadDish = multer({ storage: dishStorage });
 
 
-// --- NUOVA ROTTA PER GESTIRE L'UPLOAD DELLE FOTO DEI PIATTI ---
+// --- ROTTA PER GESTIRE L'UPLOAD DELLE FOTO DEI PIATTI (Aggiunta e Corretta) ---
 app.post('/upload-dish-image', uploadDish.single('dishImage'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Nessun file caricato.' });
@@ -65,7 +65,8 @@ app.post('/upload-dish-image', uploadDish.single('dishImage'), (req, res) => {
   res.status(200).json({ url: req.file.path });
 });
 
-// --- NUOVA ROTTA PER RECUPERARE I DATI DI UTILIZZO DI CLOUDINARY ---
+
+// --- ROTTA PER RECUPERARE I DATI DI UTILIZZO DI CLOUDINARY ---
 app.get('/cloudinary-usage', async (req, res) => {
     try {
         const usage = await cloudinary.api.usage();
@@ -77,7 +78,7 @@ app.get('/cloudinary-usage', async (req, res) => {
 });
 
 
-// --- IL RESTO DEL TUO CODICE (invariato) ---
+// --- IL RESTO DEL TUO CODICE ---
 
 async function deleteCollection(db, collectionPath) {
     const collectionRef = db.collection(collectionPath);
@@ -135,7 +136,9 @@ app.post('/update-restaurant-details/:docId', uploadLogo.single('logo'), async (
             updateData.logoUrl = result.secure_url;
         }
         await docRef.update(updateData);
-        res.json({ success: true, message: 'Dati aggiornati!', updatedData });
+        // Restituisce i dati aggiornati per coerenza con il localStorage del frontend
+        const finalData = (await docRef.get()).data();
+        res.json({ success: true, message: 'Dati aggiornati!', updatedData: { nomeRistorante: finalData.nomeRistorante, logoUrl: finalData.logoUrl } });
     } catch (error) {
         res.status(500).json({ error: 'Errore durante l\'aggiornamento.' });
     }
