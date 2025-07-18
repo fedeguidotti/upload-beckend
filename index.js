@@ -2,8 +2,6 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const sharp = require('sharp');
 const { Readable } = require('stream');
 const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs');
@@ -20,7 +18,6 @@ try {
 const db = admin.firestore();
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
@@ -31,9 +28,11 @@ cloudinary.config({
   api_secret: 'cR-VWOp7lHX3kV6Wns_TuPm2MiM' 
 });
 
+// --- SETUP UNICO PER TUTTI GLI UPLOAD ---
+// Utilizziamo lo storage in memoria, che è più affidabile su Render.com
+const upload = multer({ storage: multer.memoryStorage() });
 
-// --- SETUP PER UPLOAD LOGHI (Il tuo codice originale) ---
-const uploadLogo = multer({ storage: multer.memoryStorage() });
+// Funzione generica per caricare un buffer su Cloudinary
 const uploadToCloudinary = (fileBuffer, folder) => {
     return new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream({ folder }, (error, result) => {
@@ -44,27 +43,19 @@ const uploadToCloudinary = (fileBuffer, folder) => {
     });
 };
 
-
-// --- SETUP SPECIFICO PER UPLOAD FOTO PIATTI (Aggiunto e Corretto) ---
-const dishStorage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: 'dish_images',
-    allowed_formats: ['jpeg', 'png', 'jpg'],
-    transformation: [{ width: 500, height: 500, crop: 'limit' }]
-  },
-});
-const uploadDish = multer({ storage: dishStorage });
-
-
-// --- ROTTA PER GESTIRE L'UPLOAD DELLE FOTO DEI PIATTI (Aggiunta e Corretta) ---
-app.post('/upload-dish-image', uploadDish.single('dishImage'), (req, res) => {
+// --- ROTTA PER GESTIRE L'UPLOAD DELLE FOTO DEI PIATTI ---
+app.post('/upload-dish-image', upload.single('dishImage'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Nessun file caricato.' });
   }
-  res.status(200).json({ url: req.file.path });
+  try {
+    const result = await uploadToCloudinary(req.file.buffer, 'dish_images');
+    res.status(200).json({ url: result.secure_url });
+  } catch (error) {
+    console.error("Errore durante l'upload del piatto su Cloudinary:", error);
+    res.status(500).send("Internal Server Error");
+  }
 });
-
 
 // --- ROTTA PER RECUPERARE I DATI DI UTILIZZO DI CLOUDINARY ---
 app.get('/cloudinary-usage', async (req, res) => {
@@ -72,13 +63,25 @@ app.get('/cloudinary-usage', async (req, res) => {
         const usage = await cloudinary.api.usage();
         res.status(200).json(usage);
     } catch (error) {
-        console.error("Errore nel recuperare i dati di utilizzo di Cloudinary:", error);
         res.status(500).json({ error: "Impossibile recuperare i dati di utilizzo." });
     }
 });
 
-
-// --- IL RESTO DEL TUO CODICE ---
+// --- ROTTA PER CANCELLARE IMMAGINE PIATTO ---
+app.post('/delete-image', async (req, res) => {
+    const { photoUrl } = req.body;
+    if (!photoUrl || !photoUrl.includes('cloudinary')) {
+        return res.status(400).json({ error: 'URL non valido.' });
+    }
+    try {
+        const folder = photoUrl.includes('/dish_images/') ? 'dish_images' : 'uploads';
+        const publicId = folder + '/' + photoUrl.split(`/${folder}/`)[1].split('.')[0];
+        await cloudinary.uploader.destroy(publicId);
+        res.status(200).json({ success: true, message: 'Immagine eliminata.' });
+    } catch (error) {
+        res.status(500).json({ error: "Errore durante l'eliminazione dell'immagine." });
+    }
+});
 
 async function deleteCollection(db, collectionPath) {
     const collectionRef = db.collection(collectionPath);
@@ -91,19 +94,18 @@ async function deleteCollection(db, collectionPath) {
 }
 
 // --- ROTTE RISTORATORE ---
-
 app.post('/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Username e password sono obbligatori.' });
     try {
         const snapshot = await db.collection('ristoranti').where('username', '==', username).limit(1).get();
-        if (snapshot.empty) return res.status(401).json({ error: 'Credenziali non valide.' });
+        if (snapshot.empty) return res.status(401).json({ success: false, error: 'Credenziali non valide.' });
         
         const restaurantDoc = snapshot.docs[0];
         const restaurantData = restaurantDoc.data();
         const isPasswordCorrect = await bcrypt.compare(password, restaurantData.passwordHash);
 
-        if (!isPasswordCorrect) return res.status(401).json({ error: 'Credenziali non valide.' });
+        if (!isPasswordCorrect) return res.status(401).json({ success: false, error: 'Credenziali non valide.' });
 
         res.json({ 
           success: true, 
@@ -117,7 +119,7 @@ app.post('/login', async (req, res) => {
     }
 });
 
-app.post('/update-restaurant-details/:docId', uploadLogo.single('logo'), async (req, res) => {
+app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
     const { docId } = req.params;
     const { nomeRistorante } = req.body;
     try {
@@ -144,7 +146,6 @@ app.post('/update-restaurant-details/:docId', uploadLogo.single('logo'), async (
 });
 
 // --- ROTTE ADMIN ---
-
 app.get('/restaurants', async (req, res) => {
     try {
         const snapshot = await db.collection('ristoranti').orderBy('nomeRistorante').get();
@@ -155,7 +156,7 @@ app.get('/restaurants', async (req, res) => {
     }
 });
 
-app.post('/create-restaurant', uploadLogo.single('logo'), async (req, res) => {
+app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
     const { nomeRistorante, username, password } = req.body;
     if (!nomeRistorante || !username || !password) return res.status(400).json({ error: 'Dati mancanti.' });
     try {
@@ -215,7 +216,7 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
     }
 });
 
-app.post('/update-restaurant-admin/:docId', uploadLogo.single('logo'), async (req, res) => {
+app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, res) => {
     const { docId } = req.params;
     const { nomeRistorante, username, password } = req.body;
     
