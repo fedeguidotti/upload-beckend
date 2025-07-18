@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
-const { Readable } = require('stream');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs');
 
@@ -28,53 +28,84 @@ cloudinary.config({
   api_secret: 'cR-VWOp7lHX3kV6Wns_TuPm2MiM' 
 });
 
-// --- SETUP UNICO PER TUTTI GLI UPLOAD ---
-// Utilizziamo lo storage in memoria, che è più affidabile su Render.com
-const upload = multer({ storage: multer.memoryStorage() });
+// --- SETUP STORAGE PER UPLOAD ---
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: (req, file) => {
+    let folder;
+    if (req.path.includes('dish')) {
+        folder = 'dish_images';
+    } else {
+        folder = 'logos';
+    }
+    return {
+        folder: folder,
+        allowed_formats: ['jpeg', 'png', 'jpg'],
+        transformation: [{ width: 500, height: 500, crop: 'limit' }]
+    };
+  },
+});
+const upload = multer({ storage: storage });
 
-// Funzione generica per caricare un buffer su Cloudinary
-const uploadToCloudinary = (fileBuffer, folder) => {
-    return new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream({ folder }, (error, result) => {
-            if (error) reject(error);
-            else resolve(result);
-        });
-        Readable.from(fileBuffer).pipe(stream);
-    });
-};
-
-// --- ROTTA PER GESTIRE L'UPLOAD DELLE FOTO DEI PIATTI ---
-app.post('/upload-dish-image', upload.single('dishImage'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'Nessun file caricato.' });
-  }
-  try {
-    const result = await uploadToCloudinary(req.file.buffer, 'dish_images');
-    res.status(200).json({ url: result.secure_url });
-  } catch (error) {
-    console.error("Errore durante l'upload del piatto su Cloudinary:", error);
-    res.status(500).send("Internal Server Error");
-  }
+// --- ROTTE UPLOAD ---
+app.post('/upload-dish-image', upload.single('dishImage'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Nessun file caricato.' });
+  res.status(200).json({ url: req.file.path });
 });
 
-// --- ROTTA PER RECUPERARE I DATI DI UTILIZZO DI CLOUDINARY ---
+app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (req, res) => {
+    const { restaurantId, dishId } = req.params;
+    const { name, description, price, category, isSpecial } = req.body;
+    const allergens = JSON.parse(req.body.allergens || '[]');
+
+    try {
+        const docRef = db.collection(`ristoranti/${restaurantId}/menu`).doc(dishId);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) return res.status(404).json({ error: 'Piatto non trovato.' });
+
+        const updateData = {
+            name,
+            description,
+            price: parseFloat(price),
+            category,
+            isSpecial: isSpecial === 'true',
+            allergens
+        };
+
+        if (req.file) {
+            const oldData = docSnap.data();
+            if (oldData.photoUrl && oldData.photoUrl.includes('cloudinary')) {
+                const folder = oldData.photoUrl.includes('/dish_images/') ? 'dish_images' : 'uploads';
+                const publicId = folder + '/' + oldData.photoUrl.split(`/${folder}/`)[1].split('.')[0];
+                await cloudinary.uploader.destroy(publicId);
+            }
+            updateData.photoUrl = req.file.path;
+        }
+
+        await docRef.update(updateData);
+        res.json({ success: true, message: 'Piatto aggiornato!' });
+    } catch (error) {
+        console.error("Errore aggiornamento piatto:", error);
+        res.status(500).json({ error: 'Errore durante l\'aggiornamento del piatto.' });
+    }
+});
+
+
+// --- ROTTE ADMIN E UTILITY ---
 app.get('/cloudinary-usage', async (req, res) => {
     try {
-        const usage = await cloudinary.api.usage();
+        const usage = await cloudinary.api.usage({ credits: true });
         res.status(200).json(usage);
     } catch (error) {
         res.status(500).json({ error: "Impossibile recuperare i dati di utilizzo." });
     }
 });
 
-// --- ROTTA PER CANCELLARE IMMAGINE PIATTO ---
 app.post('/delete-image', async (req, res) => {
     const { photoUrl } = req.body;
-    if (!photoUrl || !photoUrl.includes('cloudinary')) {
-        return res.status(400).json({ error: 'URL non valido.' });
-    }
+    if (!photoUrl || !photoUrl.includes('cloudinary')) return res.status(400).json({ error: 'URL non valido.' });
     try {
-        const folder = photoUrl.includes('/dish_images/') ? 'dish_images' : 'uploads';
+        const folder = photoUrl.includes('/dish_images/') ? 'dish_images' : 'logos';
         const publicId = folder + '/' + photoUrl.split(`/${folder}/`)[1].split('.')[0];
         await cloudinary.uploader.destroy(publicId);
         res.status(200).json({ success: true, message: 'Immagine eliminata.' });
@@ -134,8 +165,7 @@ app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req,
                 const publicId = 'logos/' + oldData.logoUrl.split('/logos/')[1].split('.')[0];
                 await cloudinary.uploader.destroy(publicId);
             }
-            const result = await uploadToCloudinary(req.file.buffer, 'logos');
-            updateData.logoUrl = result.secure_url;
+            updateData.logoUrl = req.file.path;
         }
         await docRef.update(updateData);
         const finalData = (await docRef.get()).data();
@@ -162,8 +192,7 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
     try {
         let logoUrl = null;
         if (req.file) {
-            const result = await uploadToCloudinary(req.file.buffer, 'logos');
-            logoUrl = result.secure_url;
+            logoUrl = req.file.path;
         }
         const salt = bcrypt.genSaltSync(10);
         const passwordHash = bcrypt.hashSync(password, salt);
@@ -206,7 +235,7 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
 
         await deleteCollection(db, `ristoranti/${restaurantId}/menu`);
         await deleteCollection(db, `ristoranti/${restaurantId}/menuCategories`);
-        await deleteCollection(db, `ristoranti/${restaurantId}/tavoli`);
+        await deleteCollection(db, `ristoranti/${restaurantId}/fixedTables`);
         
         await db.collection('ristoranti').doc(docId).delete();
 
@@ -237,8 +266,7 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
                 const publicId = 'logos/' + oldData.logoUrl.split('/logos/')[1].split('.')[0];
                 await cloudinary.uploader.destroy(publicId);
             }
-            const result = await uploadToCloudinary(req.file.buffer, 'logos');
-            updateData.logoUrl = result.secure_url;
+            updateData.logoUrl = req.file.path;
         }
 
         await docRef.update(updateData);
