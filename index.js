@@ -53,6 +53,47 @@ app.post('/upload-dish-image', upload.single('dishImage'), (req, res) => {
   res.status(200).json({ url: req.file.path });
 });
 
+// --- ROTTA PER AGGIUNGERE UN NUOVO PIATTO ---
+app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
+    const { restaurantId } = req.params;
+    const { name, description, price, category, isSpecial } = req.body;
+    // Assicurati di inviare gli allergeni come stringa JSON dal frontend
+    const allergens = JSON.parse(req.body.allergens || '[]'); 
+
+    if (!name || !price || !category) {
+        return res.status(400).json({ error: 'Nome, prezzo e categoria sono obbligatori.' });
+    }
+
+    try {
+        let photoUrl = null;
+        if (req.file) {
+            // Se un'immagine viene caricata, salviamo il suo URL
+            photoUrl = req.file.path;
+        }
+
+        const newDishData = {
+            name,
+            description,
+            price: parseFloat(price),
+            category,
+            isSpecial: isSpecial === 'true',
+            allergens,
+            photoUrl // può essere null se non c'è immagine
+        };
+
+        // Aggiungiamo il nuovo piatto alla collezione 'menu' del ristorante specifico
+        // Nota: usiamo il docId del ristorante, che ora è passato come restaurantId
+        const docRef = await db.collection(`ristoranti`).doc(restaurantId).collection('menu').add(newDishData);
+
+        res.status(201).json({ success: true, message: 'Piatto aggiunto con successo!', dishId: docRef.id });
+
+    } catch (error) {
+        console.error("Errore durante l'aggiunta del piatto:", error);
+        res.status(500).json({ error: 'Errore interno del server durante l\'aggiunta del piatto.' });
+    }
+});
+
+
 app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (req, res) => {
     const { restaurantId, dishId } = req.params;
     const { name, description, price, category, isSpecial } = req.body;
