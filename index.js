@@ -18,7 +18,13 @@ try {
 const db = admin.firestore();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: 'https://resonant-croquembouche-26ea6d.netlify.app',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+  credentials: true
+}));
+app.options('*', cors());
 app.use(express.json());
 
 // --- CONFIGURAZIONE CLOUDINARY ---
