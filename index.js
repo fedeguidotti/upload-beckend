@@ -18,13 +18,12 @@ try {
 const db = admin.firestore();
 
 const app = express();
-app.use(cors({
-  origin: 'https://resonant-croquembouche-26ea6d.netlify.app',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
-  credentials: true
-}));
-app.options('*', cors());
+
+// --- CONFIGURAZIONE CORS CORRETTA ---
+// Abilita CORS per tutte le richieste. Questo è un modo più robusto per risolvere l'errore.
+app.use(cors());
+app.options('*', cors()); // Abilita le richieste di pre-flight per tutte le rotte
+
 app.use(express.json());
 
 // --- CONFIGURAZIONE CLOUDINARY ---
