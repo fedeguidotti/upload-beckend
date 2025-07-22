@@ -59,7 +59,9 @@ app.post('/upload-dish-image', upload.single('dishImage'), (req, res) => {
 // --- ROTTA PER AGGIUNGERE UN NUOVO PIATTO ---
 app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
     const { restaurantId } = req.params;
-    const { name, description, price, category, isSpecial, isExtraCharge } = req.body;
+    const { name, description, price, category, isSpecial } = req.body;
+    // Legge il valore booleano 'isExtraCharge'
+    const isExtraCharge = req.body.isExtraCharge === 'true';
     const allergens = JSON.parse(req.body.allergens || '[]'); 
 
     if (!name || !price || !category) {
@@ -78,7 +80,7 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
             price: parseFloat(price),
             category,
             isSpecial: isSpecial === 'true',
-            isExtraCharge: isExtraCharge === 'true',
+            isExtraCharge: isExtraCharge, // Salva il nuovo campo
             allergens,
             photoUrl
         };
@@ -96,7 +98,9 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
 
 app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (req, res) => {
     const { restaurantId, dishId } = req.params;
-    const { name, description, price, category, isSpecial, isExtraCharge } = req.body;
+    const { name, description, price, category, isSpecial } = req.body;
+    // Legge il valore booleano 'isExtraCharge'
+    const isExtraCharge = req.body.isExtraCharge === 'true';
     const allergens = JSON.parse(req.body.allergens || '[]');
 
     try {
@@ -110,7 +114,7 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
             price: parseFloat(price),
             category,
             isSpecial: isSpecial === 'true',
-            isExtraCharge: isExtraCharge === 'true',
+            isExtraCharge: isExtraCharge, // Aggiorna il nuovo campo
             allergens
         };
 
@@ -245,9 +249,7 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
         const defaultSettings = {
             ayce: {
                 enabled: false,
-                price: 25.00,
-                limitOrders: false, // Nuovo campo
-                maxOrders: 3        // Nuovo campo
+                price: 25.00
             },
             coperto: {
                 enabled: false,
