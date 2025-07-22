@@ -20,7 +20,7 @@ const db = admin.firestore();
 const app = express();
 
 // --- CONFIGURAZIONE CORS CORRETTA ---
-// Abilita CORS per tutte le richieste. Questo è un modo più robusto per risolvere l'errore.
+// Abilita CORS per tutte le richieste in modo più permissivo per risolvere il problema.
 app.use(cors());
 app.options('*', cors()); // Abilita le richieste di pre-flight per tutte le rotte
 
@@ -319,7 +319,6 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
     }
 });
 
-// --- NUOVA ROTTA PER STATISTICHE GLOBALI ---
 app.get('/global-stats', async (req, res) => {
     try {
         const restaurantsSnapshot = await db.collection('ristoranti').get();
@@ -329,9 +328,6 @@ app.get('/global-stats', async (req, res) => {
         let totalSessions = 0;
         let totalDishesSold = 0;
 
-        const promises = restaurants.map(restaurant => 
-            db.collectionGroup('closedSessions').where('restaurantId', '==', restaurant.id).get()
-        );
         const sessionsSnapshots = await Promise.all(restaurants.map(r => db.collection(`ristoranti/${r.id}/closedSessions`).get()));
 
         sessionsSnapshots.forEach(snapshot => {
@@ -357,7 +353,6 @@ app.get('/global-stats', async (req, res) => {
         res.status(500).json({ error: 'Impossibile calcolare le statistiche.' });
     }
 });
-
 
 app.get('/', (req, res) => {
   res.send('Backend per Ristoranti Attivo!');
