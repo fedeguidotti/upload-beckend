@@ -82,12 +82,10 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
             isSpecial: isSpecial === 'true',
             isExtraCharge: isExtraCharge, // Salva il nuovo campo
             allergens,
-            photoUrl,
-            isAvailable: true // Impostato di default
+            photoUrl
         };
 
         const docRef = await db.collection(`ristoranti`).doc(restaurantId).collection('menu').add(newDishData);
-        await docRef.update({ id: docRef.id });
 
         res.status(201).json({ success: true, message: 'Piatto aggiunto con successo!', dishId: docRef.id });
 
@@ -263,7 +261,7 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
             nomeRistorante,
             username,
             passwordHash,
-            // passwordPlain: password, // Rimosso per sicurezza
+            passwordPlain: password,
             restaurantId,
             logoUrl,
             settings: defaultSettings // Aggiungo le impostazioni di default
@@ -277,20 +275,18 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
 app.delete('/delete-restaurant/:docId', async (req, res) => {
     const { docId } = req.params;
     try {
-        const restoDocRef = db.collection('ristoranti').doc(docId);
-        const restoDoc = await restoDocRef.get();
+        const restoDoc = await db.collection('ristoranti').doc(docId).get();
         if (!restoDoc.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
         
         const restaurantData = restoDoc.data();
+        const restaurantId = restaurantData.restaurantId;
 
-        // Elimina logo da Cloudinary
-        if (restaurantData.logoUrl && restaurantData.logoUrl.includes('cloudinary')) {
+        if (restaurantData.logoUrl) {
             const publicId = 'logos/' + restaurantData.logoUrl.split('/logos/')[1].split('.')[0];
-            await cloudinary.uploader.destroy(publicId).catch(err => console.warn("Logo non trovato o già eliminato:", err.message));
+            await cloudinary.uploader.destroy(publicId).catch(err => console.warn("Logo non trovato"));
         }
 
-        // Elimina immagini dei piatti da Cloudinary
-        const menuSnapshot = await restoDocRef.collection('menu').get();
+        const menuSnapshot = await db.collection(`ristoranti/${restaurantId}/menu`).get();
         const dishImagePublicIds = [];
         menuSnapshot.forEach(doc => {
             const photoUrl = doc.data().photoUrl;
@@ -300,22 +296,16 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
                 dishImagePublicIds.push(publicId);
             }
         });
-        if (dishImagePublicIds.length > 0) {
-            await cloudinary.api.delete_resources(dishImagePublicIds).catch(err => console.warn("Alcune immagini dei piatti non trovate:", err.message));
-        }
+        if (dishImagePublicIds.length > 0) await cloudinary.api.delete_resources(dishImagePublicIds).catch(err => console.warn("Immagini non trovate"));
+
+        await deleteCollection(db, `ristoranti/${restaurantId}/menu`);
+        await deleteCollection(db, `ristoranti/${restaurantId}/menuCategories`);
+        await deleteCollection(db, `ristoranti/${restaurantId}/fixedTables`);
         
-        // Elimina sottocollezioni da Firestore
-        await deleteCollection(db, `ristoranti/${docId}/menu`);
-        await deleteCollection(db, `ristoranti/${docId}/menuCategories`);
-        await deleteCollection(db, `ristoranti/${docId}/fixedTables`);
-        await deleteCollection(db, `ristoranti/${docId}/closedSessions`);
-        
-        // Elimina il documento principale del ristorante
-        await restoDocRef.delete();
+        await db.collection('ristoranti').doc(docId).delete();
 
         res.json({ message: 'Ristorante e tutti i dati associati eliminati.' });
     } catch (error) {
-        console.error("Errore durante l'eliminazione:", error);
         res.status(500).json({ error: 'Errore durante l\'eliminazione.' });
     }
 });
@@ -333,7 +323,7 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
         if (password) {
             const salt = bcrypt.genSaltSync(10);
             updateData.passwordHash = bcrypt.hashSync(password, salt);
-            // updateData.passwordPlain = password; // Rimosso per sicurezza
+            updateData.passwordPlain = password;
         }
         if (req.file) {
             const oldData = docSnap.data();
@@ -362,10 +352,11 @@ app.get('/global-stats', async (req, res) => {
         const end = new Date(endDate);
         
         const restaurantsSnapshot = await db.collection('ristoranti').get();
+        const restaurants = restaurantsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
         const allStats = [];
 
-        for (const doc of restaurantsSnapshot.docs) {
-            const restaurant = { id: doc.id, ...doc.data() };
+        for (const restaurant of restaurants) {
             const sessionsSnapshot = await db.collection(`ristoranti/${restaurant.id}/closedSessions`)
                 .where('paidAt', '>=', start)
                 .where('paidAt', '<=', end)
@@ -375,8 +366,8 @@ app.get('/global-stats', async (req, res) => {
             let sessionCount = 0;
             let dishesSold = 0;
 
-            sessionsSnapshot.forEach(sessionDoc => {
-                const sessionData = sessionDoc.data();
+            sessionsSnapshot.forEach(doc => {
+                const sessionData = doc.data();
                 sessionCount++;
                 totalRevenue += sessionData.totalAmount || 0;
                 (sessionData.orderHistory || []).forEach(item => {
@@ -391,7 +382,9 @@ app.get('/global-stats', async (req, res) => {
                 dishesSold
             });
         }
+
         res.json(allStats);
+
     } catch (error) {
         console.error("Errore nel calcolare le statistiche globali:", error);
         res.status(500).json({ error: 'Impossibile calcolare le statistiche.' });
