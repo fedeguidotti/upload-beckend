@@ -183,11 +183,11 @@ app.post('/login', async (req, res) => {
         if (!isPasswordCorrect) return res.status(401).json({ success: false, error: 'Credenziali non valide.' });
 
         res.json({ 
-          success: true, 
-          docId: restaurantDoc.id,
-          restaurantId: restaurantData.restaurantId,
-          nomeRistorante: restaurantData.nomeRistorante,
-          logoUrl: restaurantData.logoUrl || null
+            success: true, 
+            docId: restaurantDoc.id,
+            restaurantId: restaurantData.restaurantId,
+            nomeRistorante: restaurantData.nomeRistorante,
+            logoUrl: restaurantData.logoUrl || null
         });
     } catch (error) {
         res.status(500).json({ error: 'Errore interno del server.' });
@@ -246,7 +246,9 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
         const defaultSettings = {
             ayce: {
                 enabled: false,
-                price: 25.00
+                price: 25.00,
+                limitOrders: false, // NUOVO CAMPO
+                maxOrders: 3        // NUOVO CAMPO
             },
             coperto: {
                 enabled: false,
