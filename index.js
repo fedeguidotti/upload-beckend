@@ -319,35 +319,47 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
 
 app.get('/global-stats', async (req, res) => {
     try {
+        const { startDate, endDate } = req.query;
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'Le date di inizio e fine sono richieste.' });
+        }
+
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        
         const restaurantsSnapshot = await db.collection('ristoranti').get();
         const restaurants = restaurantsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-        let totalRevenue = 0;
-        let totalSessions = 0;
-        let totalDishesSold = 0;
+        const allStats = [];
 
-        const promises = restaurants.map(restaurant => 
-            db.collection(`ristoranti/${restaurant.id}/closedSessions`).get()
-        );
-        const sessionsSnapshots = await Promise.all(promises);
+        for (const restaurant of restaurants) {
+            const sessionsSnapshot = await db.collection(`ristoranti/${restaurant.id}/closedSessions`)
+                .where('paidAt', '>=', start)
+                .where('paidAt', '<=', end)
+                .get();
 
-        sessionsSnapshots.forEach(snapshot => {
-            snapshot.forEach(doc => {
+            let totalRevenue = 0;
+            let sessionCount = 0;
+            let dishesSold = 0;
+
+            sessionsSnapshot.forEach(doc => {
                 const sessionData = doc.data();
-                totalSessions++;
+                sessionCount++;
                 totalRevenue += sessionData.totalAmount || 0;
                 (sessionData.orderHistory || []).forEach(item => {
-                    totalDishesSold += item.quantity || 1;
+                    dishesSold += item.quantity || 1;
                 });
             });
-        });
 
-        res.json({
-            restaurantCount: restaurants.length,
-            totalRevenue,
-            totalSessions,
-            totalDishesSold
-        });
+            allStats.push({
+                name: restaurant.nomeRistorante,
+                totalRevenue,
+                sessionCount,
+                dishesSold
+            });
+        }
+
+        res.json(allStats);
 
     } catch (error) {
         console.error("Errore nel calcolare le statistiche globali:", error);
