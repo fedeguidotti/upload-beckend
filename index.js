@@ -19,10 +19,8 @@ const db = admin.firestore();
 
 const app = express();
 
-// --- CONFIGURAZIONE CORS CORRETTA ---
-// Abilita CORS per tutte le richieste in modo più permissivo per risolvere il problema.
 app.use(cors());
-app.options('*', cors()); // Abilita le richieste di pre-flight per tutte le rotte
+app.options('*', cors()); 
 
 app.use(express.json());
 
@@ -328,7 +326,10 @@ app.get('/global-stats', async (req, res) => {
         let totalSessions = 0;
         let totalDishesSold = 0;
 
-        const sessionsSnapshots = await Promise.all(restaurants.map(r => db.collection(`ristoranti/${r.id}/closedSessions`).get()));
+        const promises = restaurants.map(restaurant => 
+            db.collection(`ristoranti/${restaurant.id}/closedSessions`).get()
+        );
+        const sessionsSnapshots = await Promise.all(promises);
 
         sessionsSnapshots.forEach(snapshot => {
             snapshot.forEach(doc => {
