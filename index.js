@@ -59,7 +59,7 @@ app.post('/upload-dish-image', upload.single('dishImage'), (req, res) => {
 // --- ROTTA PER AGGIUNGERE UN NUOVO PIATTO ---
 app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
     const { restaurantId } = req.params;
-    const { name, description, price, category, isSpecial } = req.body;
+    const { name, description, price, category, isSpecial, isExtraCharge } = req.body;
     const allergens = JSON.parse(req.body.allergens || '[]'); 
 
     if (!name || !price || !category) {
@@ -78,6 +78,7 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
             price: parseFloat(price),
             category,
             isSpecial: isSpecial === 'true',
+            isExtraCharge: isExtraCharge === 'true',
             allergens,
             photoUrl
         };
@@ -95,7 +96,7 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
 
 app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (req, res) => {
     const { restaurantId, dishId } = req.params;
-    const { name, description, price, category, isSpecial } = req.body;
+    const { name, description, price, category, isSpecial, isExtraCharge } = req.body;
     const allergens = JSON.parse(req.body.allergens || '[]');
 
     try {
@@ -109,6 +110,7 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
             price: parseFloat(price),
             category,
             isSpecial: isSpecial === 'true',
+            isExtraCharge: isExtraCharge === 'true',
             allergens
         };
 
