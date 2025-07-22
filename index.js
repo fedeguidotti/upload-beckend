@@ -319,6 +319,45 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
     }
 });
 
+// --- NUOVA ROTTA PER STATISTICHE GLOBALI ---
+app.get('/global-stats', async (req, res) => {
+    try {
+        const restaurantsSnapshot = await db.collection('ristoranti').get();
+        const restaurants = restaurantsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+        let totalRevenue = 0;
+        let totalSessions = 0;
+        let totalDishesSold = 0;
+
+        const promises = restaurants.map(restaurant => 
+            db.collectionGroup('closedSessions').where('restaurantId', '==', restaurant.id).get()
+        );
+        const sessionsSnapshots = await Promise.all(restaurants.map(r => db.collection(`ristoranti/${r.id}/closedSessions`).get()));
+
+        sessionsSnapshots.forEach(snapshot => {
+            snapshot.forEach(doc => {
+                const sessionData = doc.data();
+                totalSessions++;
+                totalRevenue += sessionData.totalAmount || 0;
+                (sessionData.orderHistory || []).forEach(item => {
+                    totalDishesSold += item.quantity || 1;
+                });
+            });
+        });
+
+        res.json({
+            restaurantCount: restaurants.length,
+            totalRevenue,
+            totalSessions,
+            totalDishesSold
+        });
+
+    } catch (error) {
+        console.error("Errore nel calcolare le statistiche globali:", error);
+        res.status(500).json({ error: 'Impossibile calcolare le statistiche.' });
+    }
+});
+
 
 app.get('/', (req, res) => {
   res.send('Backend per Ristoranti Attivo!');
