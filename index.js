@@ -60,7 +60,6 @@ app.post('/upload-dish-image', upload.single('dishImage'), (req, res) => {
 app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
     const { restaurantId } = req.params;
     const { name, description, price, category, isSpecial } = req.body;
-    // Legge il valore booleano 'isExtraCharge'
     const isExtraCharge = req.body.isExtraCharge === 'true';
     const allergens = JSON.parse(req.body.allergens || '[]'); 
 
@@ -80,7 +79,7 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
             price: parseFloat(price),
             category,
             isSpecial: isSpecial === 'true',
-            isExtraCharge: isExtraCharge, // Salva il nuovo campo
+            isExtraCharge: isExtraCharge,
             allergens,
             photoUrl
         };
@@ -99,7 +98,6 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
 app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (req, res) => {
     const { restaurantId, dishId } = req.params;
     const { name, description, price, category, isSpecial } = req.body;
-    // Legge il valore booleano 'isExtraCharge'
     const isExtraCharge = req.body.isExtraCharge === 'true';
     const allergens = JSON.parse(req.body.allergens || '[]');
 
@@ -114,7 +112,7 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
             price: parseFloat(price),
             category,
             isSpecial: isSpecial === 'true',
-            isExtraCharge: isExtraCharge, // Aggiorna il nuovo campo
+            isExtraCharge: isExtraCharge,
             allergens
         };
 
@@ -245,7 +243,6 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
         const passwordHash = bcrypt.hashSync(password, salt);
         const restaurantId = nomeRistorante.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString().slice(-5);
 
-        // Aggiunta la struttura per le nuove impostazioni
         const defaultSettings = {
             ayce: {
                 enabled: false,
@@ -264,7 +261,7 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
             passwordPlain: password,
             restaurantId,
             logoUrl,
-            settings: defaultSettings // Aggiungo le impostazioni di default
+            settings: defaultSettings
         });
         res.status(201).json({ message: 'Ristorante creato con successo.' });
     } catch (error) {
