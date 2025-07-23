@@ -51,12 +51,6 @@ const storage = new CloudinaryStorage({
 const upload = multer({ storage: storage });
 
 // --- ROTTE UPLOAD ---
-app.post('/upload-dish-image', upload.single('dishImage'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Nessun file caricato.' });
-  res.status(200).json({ url: req.file.path });
-});
-
-// --- ROTTA PER AGGIUNGERE UN NUOVO PIATTO ---
 app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
     const { restaurantId } = req.params;
     const { name, description, price, category, isSpecial } = req.body;
@@ -68,11 +62,6 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
     }
 
     try {
-        let photoUrl = null;
-        if (req.file) {
-            photoUrl = req.file.path;
-        }
-
         const newDishData = {
             name,
             description,
@@ -81,15 +70,13 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
             isSpecial: isSpecial === 'true',
             isExtraCharge: isExtraCharge,
             allergens,
-            photoUrl
+            photoUrl: req.file ? req.file.path : null
         };
 
         const docRef = await db.collection(`ristoranti`).doc(restaurantId).collection('menu').add(newDishData);
-
         res.status(201).json({ success: true, message: 'Piatto aggiunto con successo!', dishId: docRef.id });
 
     } catch (error) {
-        console.error("Errore durante l'aggiunta del piatto:", error);
         res.status(500).json({ error: 'Errore interno del server durante l\'aggiunta del piatto.' });
     }
 });
@@ -107,10 +94,7 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
         if (!docSnap.exists) return res.status(404).json({ error: 'Piatto non trovato.' });
 
         const updateData = {
-            name,
-            description,
-            price: parseFloat(price),
-            category,
+            name, description, price: parseFloat(price), category,
             isSpecial: isSpecial === 'true',
             isExtraCharge: isExtraCharge,
             allergens
@@ -129,7 +113,6 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
         await docRef.update(updateData);
         res.json({ success: true, message: 'Piatto aggiornato!' });
     } catch (error) {
-        console.error("Errore aggiornamento piatto:", error);
         res.status(500).json({ error: 'Errore durante l\'aggiornamento del piatto.' });
     }
 });
@@ -144,29 +127,6 @@ app.get('/cloudinary-usage', async (req, res) => {
         res.status(500).json({ error: "Impossibile recuperare i dati di utilizzo." });
     }
 });
-
-app.post('/delete-image', async (req, res) => {
-    const { photoUrl } = req.body;
-    if (!photoUrl || !photoUrl.includes('cloudinary')) return res.status(400).json({ error: 'URL non valido.' });
-    try {
-        const folder = photoUrl.includes('/dish_images/') ? 'dish_images' : 'logos';
-        const publicId = folder + '/' + photoUrl.split(`/${folder}/`)[1].split('.')[0];
-        await cloudinary.uploader.destroy(publicId);
-        res.status(200).json({ success: true, message: 'Immagine eliminata.' });
-    } catch (error) {
-        res.status(500).json({ error: "Errore durante l'eliminazione dell'immagine." });
-    }
-});
-
-async function deleteCollection(db, collectionPath) {
-    const collectionRef = db.collection(collectionPath);
-    const snapshot = await collectionRef.limit(500).get();
-    if (snapshot.empty) return;
-    const batch = db.batch();
-    snapshot.docs.forEach(doc => batch.delete(doc.ref));
-    await batch.commit();
-    await deleteCollection(db, collectionPath);
-}
 
 // --- ROTTE RISTORATORE ---
 app.post('/login', async (req, res) => {
@@ -194,6 +154,43 @@ app.post('/login', async (req, res) => {
     }
 });
 
+app.post('/waiter-login', async (req, res) => {
+    const { restaurantId, username, password } = req.body;
+    if (!restaurantId || !username || !password) return res.status(400).json({ error: 'Dati mancanti.' });
+
+    try {
+        const docRef = db.collection('ristoranti').doc(restaurantId);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
+
+        const settings = docSnap.data().settings;
+        if (!settings || !settings.waiterMode || !settings.waiterMode.enabled) {
+            return res.status(403).json({ error: 'La modalità cameriere non è attiva per questo ristorante.' });
+        }
+
+        const waiterCreds = settings.waiterMode;
+        if (username !== waiterCreds.username || !waiterCreds.passwordHash) {
+            return res.status(401).json({ error: 'Credenziali non valide.' });
+        }
+        
+        const isPasswordCorrect = await bcrypt.compare(password, waiterCreds.passwordHash);
+        if (!isPasswordCorrect) return res.status(401).json({ error: 'Credenziali non valide.' });
+
+        const data = docSnap.data();
+        res.json({
+            success: true,
+            docId: docSnap.id,
+            restaurantId: data.restaurantId,
+            nomeRistorante: data.nomeRistorante,
+            logoUrl: data.logoUrl || null
+        });
+
+    } catch (error) {
+        res.status(500).json({ error: 'Errore del server.' });
+    }
+});
+
+
 app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
     const { docId } = req.params;
     const { nomeRistorante } = req.body;
@@ -205,7 +202,7 @@ app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req,
         const updateData = { nomeRistorante };
         if (req.file) {
             const oldData = docSnap.data();
-            if (oldData.logoUrl) {
+            if (oldData.logoUrl && oldData.logoUrl.includes('cloudinary')) {
                 const publicId = 'logos/' + oldData.logoUrl.split('/logos/')[1].split('.')[0];
                 await cloudinary.uploader.destroy(publicId);
             }
@@ -219,6 +216,35 @@ app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req,
     }
 });
 
+app.post('/update-waiter-credentials/:docId', async (req, res) => {
+    const { docId } = req.params;
+    const { username, password } = req.body;
+
+    if (!username) return res.status(400).json({ error: 'Il nome utente è obbligatorio.' });
+
+    try {
+        const docRef = db.collection('ristoranti').doc(docId);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) return res.status(404).json({ error: 'Ristorante non trovato' });
+
+        const settings = docSnap.data().settings || {};
+        const waiterMode = settings.waiterMode || {};
+        
+        waiterMode.username = username;
+        if (password) {
+            const salt = await bcrypt.genSalt(10);
+            waiterMode.passwordHash = await bcrypt.hash(password, salt);
+        }
+
+        await docRef.set({ settings: { ...settings, waiterMode } }, { merge: true });
+        res.json({ success: true, message: 'Credenziali cameriere aggiornate!' });
+
+    } catch (error) {
+        res.status(500).json({ error: 'Errore durante l\'aggiornamento delle credenziali.' });
+    }
+});
+
+
 // --- ROTTE ADMIN ---
 app.get('/restaurants', async (req, res) => {
     try {
@@ -226,7 +252,6 @@ app.get('/restaurants', async (req, res) => {
         const restaurants = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         res.json(restaurants);
     } catch (error) {
-        console.error("Errore nel recuperare i ristoranti:", error);
         res.status(500).json({ error: 'Impossibile recuperare i ristoranti.' });
     }
 });
@@ -235,34 +260,30 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
     const { nomeRistorante, username, password } = req.body;
     if (!nomeRistorante || !username || !password) return res.status(400).json({ error: 'Dati mancanti.' });
     try {
-        let logoUrl = null;
-        if (req.file) {
-            logoUrl = req.file.path;
-        }
         const salt = bcrypt.genSaltSync(10);
         const passwordHash = bcrypt.hashSync(password, salt);
         const restaurantId = nomeRistorante.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString().slice(-5);
+        
+        const defaultWaiterPassword = '1234';
+        const waiterPasswordHash = bcrypt.hashSync(defaultWaiterPassword, salt);
 
         const defaultSettings = {
             ayce: {
-                enabled: false,
-                price: 25.00,
-                limitOrders: false, // NUOVO CAMPO
-                maxOrders: 3        // NUOVO CAMPO
+                enabled: false, price: 25.00,
+                limitOrders: false, maxOrders: 3 
             },
-            coperto: {
+            coperto: { enabled: false, price: 2.00 },
+            waiterMode: {
                 enabled: false,
-                price: 2.00
+                username: 'cameriere',
+                passwordHash: waiterPasswordHash
             }
         };
 
         await db.collection('ristoranti').add({
-            nomeRistorante,
-            username,
-            passwordHash,
-            passwordPlain: password,
+            nomeRistorante, username, passwordHash,
             restaurantId,
-            logoUrl,
+            logoUrl: req.file ? req.file.path : null,
             settings: defaultSettings
         });
         res.status(201).json({ message: 'Ristorante creato con successo.' });
@@ -276,30 +297,6 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
     try {
         const restoDoc = await db.collection('ristoranti').doc(docId).get();
         if (!restoDoc.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
-        
-        const restaurantData = restoDoc.data();
-        const restaurantId = restaurantData.restaurantId;
-
-        if (restaurantData.logoUrl) {
-            const publicId = 'logos/' + restaurantData.logoUrl.split('/logos/')[1].split('.')[0];
-            await cloudinary.uploader.destroy(publicId).catch(err => console.warn("Logo non trovato"));
-        }
-
-        const menuSnapshot = await db.collection(`ristoranti/${restaurantId}/menu`).get();
-        const dishImagePublicIds = [];
-        menuSnapshot.forEach(doc => {
-            const photoUrl = doc.data().photoUrl;
-            if (photoUrl && photoUrl.includes('cloudinary')) {
-                const folder = photoUrl.includes('/dish_images/') ? 'dish_images' : 'uploads';
-                const publicId = folder + '/' + photoUrl.split(`/${folder}/`)[1].split('.')[0];
-                dishImagePublicIds.push(publicId);
-            }
-        });
-        if (dishImagePublicIds.length > 0) await cloudinary.api.delete_resources(dishImagePublicIds).catch(err => console.warn("Immagini non trovate"));
-
-        await deleteCollection(db, `ristoranti/${restaurantId}/menu`);
-        await deleteCollection(db, `ristoranti/${restaurantId}/menuCategories`);
-        await deleteCollection(db, `ristoranti/${restaurantId}/fixedTables`);
         
         await db.collection('ristoranti').doc(docId).delete();
 
@@ -322,11 +319,10 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
         if (password) {
             const salt = bcrypt.genSaltSync(10);
             updateData.passwordHash = bcrypt.hashSync(password, salt);
-            updateData.passwordPlain = password;
         }
         if (req.file) {
             const oldData = docSnap.data();
-            if (oldData.logoUrl) {
+            if (oldData.logoUrl && oldData.logoUrl.includes('cloudinary')) {
                 const publicId = 'logos/' + oldData.logoUrl.split('/logos/')[1].split('.')[0];
                 await cloudinary.uploader.destroy(publicId);
             }
@@ -361,9 +357,7 @@ app.get('/global-stats', async (req, res) => {
                 .where('paidAt', '<=', end)
                 .get();
 
-            let totalRevenue = 0;
-            let sessionCount = 0;
-            let dishesSold = 0;
+            let totalRevenue = 0, sessionCount = 0, dishesSold = 0;
 
             sessionsSnapshot.forEach(doc => {
                 const sessionData = doc.data();
@@ -376,16 +370,13 @@ app.get('/global-stats', async (req, res) => {
 
             allStats.push({
                 name: restaurant.nomeRistorante,
-                totalRevenue,
-                sessionCount,
-                dishesSold
+                totalRevenue, sessionCount, dishesSold
             });
         }
 
         res.json(allStats);
 
     } catch (error) {
-        console.error("Errore nel calcolare le statistiche globali:", error);
         res.status(500).json({ error: 'Impossibile calcolare le statistiche.' });
     }
 });
