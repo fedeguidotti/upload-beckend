@@ -154,16 +154,25 @@ app.post('/login', async (req, res) => {
     }
 });
 
+// ########## INIZIO CODICE CORRETTO ##########
 app.post('/waiter-login', async (req, res) => {
     const { restaurantId, username, password } = req.body;
-    if (!restaurantId || !username || !password) return res.status(400).json({ error: 'Dati mancanti.' });
+    if (!restaurantId || !username || !password) {
+        return res.status(400).json({ error: 'ID Ristorante, username e password sono obbligatori.' });
+    }
 
     try {
-        const docRef = db.collection('ristoranti').doc(restaurantId);
-        const docSnap = await docRef.get();
-        if (!docSnap.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
-
+        // CORREZIONE: Cerca il documento dove il CAMPO 'restaurantId' corrisponde a quello inviato
+        const snapshot = await db.collection('ristoranti').where('restaurantId', '==', restaurantId).limit(1).get();
+        
+        // Se la ricerca non produce risultati, l'ID è errato
+        if (snapshot.empty) {
+            return res.status(404).json({ error: 'ID Ristorante non trovato o non valido.' });
+        }
+        
+        const docSnap = snapshot.docs[0];
         const settings = docSnap.data().settings;
+        
         if (!settings || !settings.waiterMode || !settings.waiterMode.enabled) {
             return res.status(403).json({ error: 'La modalità cameriere non è attiva per questo ristorante.' });
         }
@@ -174,21 +183,25 @@ app.post('/waiter-login', async (req, res) => {
         }
         
         const isPasswordCorrect = await bcrypt.compare(password, waiterCreds.passwordHash);
-        if (!isPasswordCorrect) return res.status(401).json({ error: 'Credenziali non valide.' });
+        if (!isPasswordCorrect) {
+            return res.status(401).json({ error: 'Credenziali non valide.' });
+        }
 
         const data = docSnap.data();
         res.json({
             success: true,
-            docId: docSnap.id,
+            docId: docSnap.id, // Invia il vero ID del documento al frontend
             restaurantId: data.restaurantId,
             nomeRistorante: data.nomeRistorante,
             logoUrl: data.logoUrl || null
         });
 
     } catch (error) {
+        console.error("Errore waiter-login:", error);
         res.status(500).json({ error: 'Errore del server.' });
     }
 });
+// ########## FINE CODICE CORRETTO ##########
 
 
 app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
