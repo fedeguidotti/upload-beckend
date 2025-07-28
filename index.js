@@ -6,22 +6,24 @@ const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs');
 
+// --- INIZIALIZZAZIONE FIREBASE ---
 try {
+    // NOTA: Assicurati che il file 'firebase-service-account.json' sia presente nella stessa cartella.
     const serviceAccount = require('./firebase-service-account.json');
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
 } catch (error) {
-    console.error("ERRORE: File 'firebase-service-account.json' non trovato.");
+    console.error("ERRORE CRITICO: File 'firebase-service-account.json' non trovato. Impossibile avviare il server.");
     process.exit(1);
 }
 const db = admin.firestore();
 
 const app = express();
 
+// --- MIDDLEWARE ---
 app.use(cors());
 app.options('*', cors()); 
-
 app.use(express.json());
 
 // --- CONFIGURAZIONE CLOUDINARY ---
@@ -31,29 +33,109 @@ cloudinary.config({
   api_secret: 'cR-VWOp7lHX3kV6Wns_TuPm2MiM' 
 });
 
-// --- SETUP STORAGE PER UPLOAD ---
+// --- SETUP STORAGE PER UPLOAD IMMAGINI ---
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: (req, file) => {
-    let folder;
-    if (req.path.includes('dish')) {
-        folder = 'dish_images';
-    } else {
-        folder = 'logos';
-    }
+    // Determina la cartella di destinazione in base alla rotta
+    const folder = req.path.includes('dish') ? 'dish_images' : 'logos';
     return {
         folder: folder,
         allowed_formats: ['jpeg', 'png', 'jpg'],
-        transformation: [{ width: 500, height: 500, crop: 'limit' }]
+        transformation: [{ width: 500, height: 500, crop: 'limit' }] // Ridimensiona le immagini per ottimizzarle
     };
   },
 });
 const upload = multer({ storage: storage });
 
-// --- ROTTE UPLOAD ---
+// --- LOGIN UNIFICATO (RISTORATORE, CAMERIERE, CUOCO) ---
+app.post('/login', async (req, res) => {
+    const { username, password, restaurantId } = req.body;
+
+    if (!username || !password) {
+        return res.status(400).json({ success: false, error: 'Username e password sono obbligatori.' });
+    }
+
+    try {
+        // Tentativo di login come RISTORATORE
+        const restoSnapshot = await db.collection('ristoranti').where('username', '==', username).get();
+        if (!restoSnapshot.empty) {
+            const restaurantDoc = restoSnapshot.docs[0];
+            const restaurantData = restaurantDoc.data();
+            const isPasswordCorrect = await bcrypt.compare(password, restaurantData.passwordHash);
+
+            if (isPasswordCorrect) {
+                return res.json({
+                    success: true,
+                    role: 'restaurateur', // Ruolo ristoratore
+                    docId: restaurantDoc.id,
+                    restaurantId: restaurantData.restaurantId,
+                    nomeRistorante: restaurantData.nomeRistorante,
+                    logoUrl: restaurantData.logoUrl || null
+                });
+            }
+        }
+
+        // Se non è un ristoratore, prova come CAMERIERE o CUOCO (richiede restaurantId)
+        if (!restaurantId) {
+            return res.status(401).json({ success: false, error: 'Credenziali non valide o ID ristorante mancante.' });
+        }
+        
+        const q = query(collection(db, "ristoranti"), where("restaurantId", "==", restaurantId));
+        const querySnapshot = await getDocs(q);
+
+        if (querySnapshot.empty) {
+            return res.status(404).json({ success: false, error: 'ID Ristorante non trovato.' });
+        }
+
+        const restaurantDoc = querySnapshot.docs[0];
+        const settings = restaurantDoc.data().settings || {};
+        const data = restaurantDoc.data();
+
+        // Prova login come CAMERIERE
+        const waiterCreds = settings.waiterMode;
+        if (waiterCreds && waiterCreds.username === username) {
+            const isPasswordCorrect = await bcrypt.compare(password, waiterCreds.passwordHash);
+            if (isPasswordCorrect) {
+                return res.json({
+                    success: true,
+                    role: 'waiter', // Ruolo cameriere
+                    docId: restaurantDoc.id,
+                    restaurantId: data.restaurantId,
+                    nomeRistorante: data.nomeRistorante,
+                });
+            }
+        }
+
+        // Prova login come CUOCO
+        const cookCreds = settings.cookMode;
+        if (cookCreds && cookCreds.username === username) {
+            const isPasswordCorrect = await bcrypt.compare(password, cookCreds.passwordHash);
+            if (isPasswordCorrect) {
+                return res.json({
+                    success: true,
+                    role: 'cook', // Ruolo cuoco
+                    docId: restaurantDoc.id,
+                    restaurantId: data.restaurantId,
+                    nomeRistorante: data.nomeRistorante,
+                });
+            }
+        }
+
+        // Se nessuna credenziale corrisponde
+        res.status(401).json({ success: false, error: 'Credenziali, ruolo o ID Ristorante non validi.' });
+
+    } catch (error) {
+        console.error("Errore durante il login unificato:", error);
+        res.status(500).json({ success: false, error: 'Errore interno del server.' });
+    }
+});
+
+
+// --- ROTTE GESTIONE MENU (Accessibili da Ristoratore e Cuoco) ---
 app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
     const { restaurantId } = req.params;
-    const { name, description, price, category, isSpecial } = req.body;
+    const { name, description, price, category, isSpecial, isAvailable } = req.body;
     const isExtraCharge = req.body.isExtraCharge === 'true';
     const allergens = JSON.parse(req.body.allergens || '[]'); 
 
@@ -68,23 +150,24 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
             price: parseFloat(price),
             category,
             isSpecial: isSpecial === 'true',
-            isExtraCharge: isExtraCharge,
+            isExtraCharge,
             allergens,
-            photoUrl: req.file ? req.file.path : null
+            photoUrl: req.file ? req.file.path : null,
+            isAvailable: isAvailable !== 'false' // Disponibile di default
         };
 
-        const docRef = await db.collection(`ristoranti`).doc(restaurantId).collection('menu').add(newDishData);
+        const docRef = await db.collection(`ristoranti/${restaurantId}/menu`).add(newDishData);
         res.status(201).json({ success: true, message: 'Piatto aggiunto con successo!', dishId: docRef.id });
 
     } catch (error) {
+        console.error("Errore aggiunta piatto:", error);
         res.status(500).json({ error: 'Errore interno del server durante l\'aggiunta del piatto.' });
     }
 });
 
-
 app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (req, res) => {
     const { restaurantId, dishId } = req.params;
-    const { name, description, price, category, isSpecial } = req.body;
+    const { name, description, price, category, isSpecial, isAvailable } = req.body;
     const isExtraCharge = req.body.isExtraCharge === 'true';
     const allergens = JSON.parse(req.body.allergens || '[]');
 
@@ -96,16 +179,18 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
         const updateData = {
             name, description, price: parseFloat(price), category,
             isSpecial: isSpecial === 'true',
-            isExtraCharge: isExtraCharge,
-            allergens
+            isExtraCharge,
+            allergens,
+            isAvailable: isAvailable !== 'false'
         };
 
         if (req.file) {
+            // Se c'è una nuova foto, cancella la vecchia da Cloudinary se esiste
             const oldData = docSnap.data();
             if (oldData.photoUrl && oldData.photoUrl.includes('cloudinary')) {
-                const folder = oldData.photoUrl.includes('/dish_images/') ? 'dish_images' : 'uploads';
-                const publicId = folder + '/' + oldData.photoUrl.split(`/${folder}/`)[1].split('.')[0];
-                await cloudinary.uploader.destroy(publicId);
+                const publicId = oldData.photoUrl.split('/').pop().split('.')[0];
+                const folder = oldData.photoUrl.includes('/dish_images/') ? 'dish_images' : 'logos';
+                await cloudinary.uploader.destroy(`${folder}/${publicId}`);
             }
             updateData.photoUrl = req.file.path;
         }
@@ -113,97 +198,12 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
         await docRef.update(updateData);
         res.json({ success: true, message: 'Piatto aggiornato!' });
     } catch (error) {
+        console.error("Errore aggiornamento piatto:", error);
         res.status(500).json({ error: 'Errore durante l\'aggiornamento del piatto.' });
     }
 });
 
-
-// --- ROTTE ADMIN E UTILITY ---
-app.get('/cloudinary-usage', async (req, res) => {
-    try {
-        const usage = await cloudinary.api.usage({ credits: true });
-        res.status(200).json(usage);
-    } catch (error) {
-        res.status(500).json({ error: "Impossibile recuperare i dati di utilizzo." });
-    }
-});
-
-// --- ROTTE RISTORATORE ---
-app.post('/login', async (req, res) => {
-    const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'Username e password sono obbligatori.' });
-    try {
-        const snapshot = await db.collection('ristoranti').where('username', '==', username).limit(1).get();
-        if (snapshot.empty) return res.status(401).json({ success: false, error: 'Credenziali non valide.' });
-        
-        const restaurantDoc = snapshot.docs[0];
-        const restaurantData = restaurantDoc.data();
-        const isPasswordCorrect = await bcrypt.compare(password, restaurantData.passwordHash);
-
-        if (!isPasswordCorrect) return res.status(401).json({ success: false, error: 'Credenziali non valide.' });
-
-        res.json({ 
-            success: true, 
-            docId: restaurantDoc.id,
-            restaurantId: restaurantData.restaurantId,
-            nomeRistorante: restaurantData.nomeRistorante,
-            logoUrl: restaurantData.logoUrl || null
-        });
-    } catch (error) {
-        res.status(500).json({ error: 'Errore interno del server.' });
-    }
-});
-
-// ########## INIZIO CODICE CORRETTO ##########
-app.post('/waiter-login', async (req, res) => {
-    const { restaurantId, username, password } = req.body;
-    if (!restaurantId || !username || !password) {
-        return res.status(400).json({ error: 'ID Ristorante, username e password sono obbligatori.' });
-    }
-
-    try {
-        // CORREZIONE: Cerca il documento dove il CAMPO 'restaurantId' corrisponde a quello inviato
-        const snapshot = await db.collection('ristoranti').where('restaurantId', '==', restaurantId).limit(1).get();
-        
-        // Se la ricerca non produce risultati, l'ID è errato
-        if (snapshot.empty) {
-            return res.status(404).json({ error: 'ID Ristorante non trovato o non valido.' });
-        }
-        
-        const docSnap = snapshot.docs[0];
-        const settings = docSnap.data().settings;
-        
-        if (!settings || !settings.waiterMode || !settings.waiterMode.enabled) {
-            return res.status(403).json({ error: 'La modalità cameriere non è attiva per questo ristorante.' });
-        }
-
-        const waiterCreds = settings.waiterMode;
-        if (username !== waiterCreds.username || !waiterCreds.passwordHash) {
-            return res.status(401).json({ error: 'Credenziali non valide.' });
-        }
-        
-        const isPasswordCorrect = await bcrypt.compare(password, waiterCreds.passwordHash);
-        if (!isPasswordCorrect) {
-            return res.status(401).json({ error: 'Credenziali non valide.' });
-        }
-
-        const data = docSnap.data();
-        res.json({
-            success: true,
-            docId: docSnap.id, // Invia il vero ID del documento al frontend
-            restaurantId: data.restaurantId,
-            nomeRistorante: data.nomeRistorante,
-            logoUrl: data.logoUrl || null
-        });
-
-    } catch (error) {
-        console.error("Errore waiter-login:", error);
-        res.status(500).json({ error: 'Errore del server.' });
-    }
-});
-// ########## FINE CODICE CORRETTO ##########
-
-
+// --- ROTTE RISTORATORE (Esclusive) ---
 app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
     const { docId } = req.params;
     const { nomeRistorante } = req.body;
@@ -225,6 +225,7 @@ app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req,
         const finalData = (await docRef.get()).data();
         res.json({ success: true, message: 'Dati aggiornati!', updatedData: { nomeRistorante: finalData.nomeRistorante, logoUrl: finalData.logoUrl } });
     } catch (error) {
+        console.error("Errore aggiornamento dettagli ristorante:", error);
         res.status(500).json({ error: 'Errore durante l\'aggiornamento.' });
     }
 });
@@ -253,12 +254,53 @@ app.post('/update-waiter-credentials/:docId', async (req, res) => {
         res.json({ success: true, message: 'Credenziali cameriere aggiornate!' });
 
     } catch (error) {
+        console.error("Errore aggiornamento credenziali cameriere:", error);
         res.status(500).json({ error: 'Errore durante l\'aggiornamento delle credenziali.' });
     }
 });
 
+// --- NUOVA ROTTA PER AGGIORNARE CREDENZIALI CUOCO ---
+app.post('/update-cook-credentials/:docId', async (req, res) => {
+    const { docId } = req.params;
+    const { username, password } = req.body;
 
-// --- ROTTE ADMIN ---
+    if (!username) return res.status(400).json({ error: 'Il nome utente del cuoco è obbligatorio.' });
+
+    try {
+        const docRef = db.collection('ristoranti').doc(docId);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) return res.status(404).json({ error: 'Ristorante non trovato' });
+
+        const settings = docSnap.data().settings || {};
+        const cookMode = settings.cookMode || {};
+        
+        cookMode.username = username;
+        if (password) {
+            const salt = await bcrypt.genSalt(10);
+            cookMode.passwordHash = await bcrypt.hash(password, salt);
+        }
+
+        await docRef.set({ settings: { ...settings, cookMode } }, { merge: true });
+        res.json({ success: true, message: 'Credenziali cuoco aggiornate con successo!' });
+
+    } catch (error) {
+        console.error("Errore aggiornamento credenziali cuoco:", error);
+        res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
+
+
+// --- ROTTE SUPER ADMIN (Non modificate) ---
+app.get('/cloudinary-usage', async (req, res) => {
+    try {
+        const usage = await cloudinary.api.usage({ credits: true });
+        res.status(200).json(usage);
+    } catch (error) {
+        console.error("Errore recupero utilizzo Cloudinary:", error);
+        res.status(500).json({ error: "Impossibile recuperare i dati di utilizzo." });
+    }
+});
+
 app.get('/restaurants', async (req, res) => {
     try {
         const snapshot = await db.collection('ristoranti').get();
@@ -277,19 +319,23 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
         const passwordHash = bcrypt.hashSync(password, salt);
         const restaurantId = nomeRistorante.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString().slice(-5);
         
-        const defaultWaiterPassword = '1234';
+        // --- Impostazioni di default per i nuovi ruoli ---
+        const defaultWaiterPassword = 'waiter';
         const waiterPasswordHash = bcrypt.hashSync(defaultWaiterPassword, salt);
+        const defaultCookPassword = 'cook';
+        const cookPasswordHash = bcrypt.hashSync(defaultCookPassword, salt);
 
         const defaultSettings = {
-            ayce: {
-                enabled: false, price: 25.00,
-                limitOrders: false, maxOrders: 3 
-            },
+            ayce: { enabled: false, price: 25.00, limitOrders: false, maxOrders: 3 },
             coperto: { enabled: false, price: 2.00 },
             waiterMode: {
                 enabled: false,
                 username: 'cameriere',
                 passwordHash: waiterPasswordHash
+            },
+            cookMode: { // Aggiunta configurazione di default per il cuoco
+                username: 'cuoco',
+                passwordHash: cookPasswordHash
             }
         };
 
@@ -311,6 +357,7 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
         const restoDoc = await db.collection('ristoranti').doc(docId).get();
         if (!restoDoc.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
         
+        // Qui si potrebbe aggiungere la logica per eliminare le sub-collezioni (menu, tavoli, etc.)
         await db.collection('ristoranti').doc(docId).delete();
 
         res.json({ message: 'Ristorante e tutti i dati associati eliminati.' });
@@ -394,9 +441,10 @@ app.get('/global-stats', async (req, res) => {
     }
 });
 
+// --- AVVIO SERVER ---
 app.get('/', (req, res) => {
   res.send('Backend per Ristoranti Attivo!');
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server attivo su http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Server in ascolto su http://localhost:${PORT}`));
