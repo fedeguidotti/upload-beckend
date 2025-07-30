@@ -90,6 +90,53 @@ app.post('/generate-qr', async (req, res) => {
     }
 });
 
+// --- ROTTE GESTIONE PRENOTAZIONI ---
+app.post('/restaurants/:docId/reservations', async (req, res) => {
+    const { docId } = req.params;
+    const { customerName, customerPhone, partySize, tableId, tableName, dateTime, status } = req.body;
+
+    if (!customerName || !partySize || !tableId || !dateTime) {
+        return res.status(400).json({ error: 'Dati della prenotazione incompleti.' });
+    }
+
+    try {
+        const newReservation = {
+            customerName,
+            customerPhone: customerPhone || '',
+            partySize: Number(partySize),
+            tableId,
+            tableName,
+            dateTime: admin.firestore.Timestamp.fromDate(new Date(dateTime)),
+            status: status || 'confermata',
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+        const docRef = await db.collection(`ristoranti/${docId}/prenotazioni`).add(newReservation);
+        res.status(201).json({ success: true, id: docRef.id, ...newReservation });
+    } catch (error) {
+        console.error("Errore creazione prenotazione:", error);
+        res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
+
+app.patch('/restaurants/:docId/reservations/:reservationId', async (req, res) => {
+    const { docId, reservationId } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+        return res.status(400).json({ error: 'Il nuovo stato è obbligatorio.' });
+    }
+
+    try {
+        const resRef = db.collection(`ristoranti/${docId}/prenotazioni`).doc(reservationId);
+        await resRef.update({ status: status });
+        res.json({ success: true, message: 'Stato prenotazione aggiornato.' });
+    } catch (error) {
+        console.error("Errore aggiornamento stato prenotazione:", error);
+        res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
+
+
 // --- ROTTE GESTIONE PIATTI ---
 app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
     const { restaurantId } = req.params;
