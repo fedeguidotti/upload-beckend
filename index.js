@@ -21,8 +21,28 @@ const db = admin.firestore();
 
 const app = express();
 
-app.use(cors());
-app.options('*', cors()); 
+// --- CORS CONFIGURATION ROBUSTA ---
+const allowedOrigins = [
+    "https://loquacious-speculoos-f731ee.netlify.app",
+    "http://localhost:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000"
+];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            return callback(null, true);
+        }
+        return callback(null, true); // Permetti tutte le origini per ora
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
+
+app.options('*', cors());
 app.use(express.json());
 
 // --- CONFIGURAZIONE CLOUDINARY ---
@@ -157,7 +177,6 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
     }
 });
 
-
 // --- ROTTE DI LOGIN ---
 app.post('/login', async (req, res) => {
     const { username, password } = req.body;
@@ -229,7 +248,6 @@ app.post('/waiter-login', async (req, res) => {
         res.status(500).json({ error: 'Errore del server.' });
     }
 });
-
 
 // --- ROTTE GESTIONE RISTORATORE (DASHBOARD) ---
 app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
@@ -384,7 +402,7 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
     }
 });
 
-// --- ROTTE STATISTICHE E UTILITY ---
+// --- ROTTE STATISTICHE E UTILITY ROBUSTE ---
 app.get('/global-stats', async (req, res) => {
     try {
         const { startDate, endDate } = req.query;
@@ -403,14 +421,15 @@ app.get('/global-stats', async (req, res) => {
 
         for (const restaurant of restaurants) {
             const sessionsSnapshot = await db.collection(`ristoranti/${restaurant.id}/historicSessions`)
-                .where('paidAt', '>=', start) // CORREZIONE: Usare paidAt
-                .where('paidAt', '<=', end)   // CORREZIONE: Usare paidAt
+                .where('paidAt', '>=', start)
+                .where('paidAt', '<=', end)
                 .get();
 
             let totalRevenue = 0, sessionCount = 0, dishesSold = 0;
 
             sessionsSnapshot.forEach(doc => {
                 const sessionData = doc.data();
+                if (!sessionData.paidAt || typeof sessionData.paidAt.toDate !== 'function') return;
                 sessionCount++;
                 totalRevenue += sessionData.totalAmount || 0;
                 (sessionData.orders || []).forEach(item => {
@@ -432,6 +451,7 @@ app.get('/global-stats', async (req, res) => {
     }
 });
 
+// --- ANALYTICS ROBUSTA CON CONTROLLI ERRORI ---
 app.get('/analytics/:restaurantId', async (req, res) => {
     const { restaurantId } = req.params;
     const { startDate, endDate } = req.query;
@@ -446,7 +466,7 @@ app.get('/analytics/:restaurantId', async (req, res) => {
         end.setHours(23, 59, 59, 999);
 
         const sessionsRef = db.collection(`ristoranti/${restaurantId}/historicSessions`);
-        const q = sessionsRef.where('paidAt', '>=', start).where('paidAt', '<=', end); // CORREZIONE: Usare paidAt
+        const q = sessionsRef.where('paidAt', '>=', start).where('paidAt', '<=', end);
         const snapshot = await q.get();
 
         let totalRevenue = 0;
@@ -457,15 +477,23 @@ app.get('/analytics/:restaurantId', async (req, res) => {
 
         snapshot.forEach(doc => {
             const data = doc.data();
+            // CONTROLLO ROBUSTO: salta se paidAt non esiste o non è un Timestamp
+            if (!data.paidAt || typeof data.paidAt.toDate !== 'function') {
+                console.warn(`Sessione ${doc.id} ignorata: paidAt mancante o non valido`);
+                return;
+            }
+
             totalSessions++;
             totalRevenue += data.totalAmount || 0;
 
-            const dateKey = data.paidAt.toDate().toISOString().split('T')[0]; // CORREZIONE: Usare paidAt
+            const dateKey = data.paidAt.toDate().toISOString().split('T')[0];
             dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + (data.totalAmount || 0);
             dailySessions[dateKey] = (dailySessions[dateKey] || 0) + 1;
 
             (data.orders || []).forEach(item => {
-                topDishes[item.name] = (topDishes[item.name] || 0) + item.quantity;
+                if (item.name && item.quantity) {
+                    topDishes[item.name] = (topDishes[item.name] || 0) + item.quantity;
+                }
             });
         });
 
@@ -501,7 +529,6 @@ app.get('/analytics/:restaurantId', async (req, res) => {
         res.status(500).json({ error: 'Errore nel recupero delle analitiche.' });
     }
 });
-
 
 app.get('/cloudinary-usage', async (req, res) => {
     try {
