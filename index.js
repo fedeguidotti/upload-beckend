@@ -38,7 +38,6 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: (req, file) => {
-    // Determina la cartella in base al percorso della richiesta
     let folder = 'default';
     if (req.path.includes('/add-dish') || req.path.includes('/update-dish')) {
         folder = 'dish_images';
@@ -85,14 +84,10 @@ app.post('/generate-qr', async (req, res) => {
             errorCorrectionLevel: 'H',
             type: 'image/png',
             margin: 2,
-            color: {
-                dark:"#000000",
-                light:"#FFFFFF"
-            }
+            color: { dark:"#000000", light:"#FFFFFF" }
         });
         res.json({ qrCode: qrCodeDataUrl });
     } catch (err) {
-        console.error('Failed to generate QR code', err);
         res.status(500).json({ error: 'Failed to generate QR code' });
     }
 });
@@ -100,27 +95,24 @@ app.post('/generate-qr', async (req, res) => {
 // --- ROTTE GESTIONE PRENOTAZIONI ---
 app.post('/restaurants/:docId/reservations', async (req, res) => {
     const { docId } = req.params;
-    const { customerName, customerPhone, partySize, tableId, tableName, dateTime, status } = req.body;
+    const { customerName, customerPhone, partySize, tableId, tableName, dateTime } = req.body;
 
     if (!customerName || !partySize || !dateTime) {
         return res.status(400).json({ error: 'Nome, numero persone e data/ora sono obbligatori.' });
     }
-
     try {
-        const newReservation = {
+        const docRef = await db.collection(`ristoranti/${docId}/prenotazioni`).add({
             customerName,
             customerPhone: customerPhone || '',
             partySize: Number(partySize),
             tableId: tableId || '',
             tableName: tableName || 'Non assegnato',
             dateTime: admin.firestore.Timestamp.fromDate(new Date(dateTime)),
-            status: status || 'confermata',
+            status: 'confermata',
             createdAt: admin.firestore.FieldValue.serverTimestamp()
-        };
-        const docRef = await db.collection(`ristoranti/${docId}/prenotazioni`).add(newReservation);
-        res.status(201).json({ success: true, id: docRef.id, ...newReservation });
+        });
+        res.status(201).json({ success: true, id: docRef.id });
     } catch (error) {
-        console.error("Errore creazione prenotazione:", error);
         res.status(500).json({ error: 'Errore interno del server.' });
     }
 });
@@ -128,18 +120,61 @@ app.post('/restaurants/:docId/reservations', async (req, res) => {
 app.patch('/restaurants/:docId/reservations/:reservationId', async (req, res) => {
     const { docId, reservationId } = req.params;
     const { status } = req.body;
-
     if (!status) {
         return res.status(400).json({ error: 'Il nuovo stato è obbligatorio.' });
     }
-
     try {
         const resRef = db.collection(`ristoranti/${docId}/prenotazioni`).doc(reservationId);
         await resRef.update({ status: status });
         res.json({ success: true, message: 'Stato prenotazione aggiornato.' });
     } catch (error) {
-        console.error("Errore aggiornamento stato prenotazione:", error);
         res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
+
+app.post('/restaurants/:docId/check-in/:reservationId', async (req, res) => {
+    const { docId, reservationId } = req.params;
+    try {
+        const reservationRef = db.collection(`ristoranti/${docId}/prenotazioni`).doc(reservationId);
+        
+        const pin = String(Math.floor(1000 + Math.random() * 9000));
+        let resultData = {};
+
+        await db.runTransaction(async (t) => {
+            const reservationDoc = await t.get(reservationRef);
+            if (!reservationDoc.exists) throw new Error("Prenotazione non trovata.");
+            
+            const reservationData = reservationDoc.data();
+            const { tableId, partySize } = reservationData;
+            
+            if (!tableId) throw new Error("Nessun tavolo assegnato a questa prenotazione.");
+
+            const tableRef = db.collection(`ristoranti/${docId}/fixedTables`).doc(tableId);
+            const tableDoc = await t.get(tableRef);
+            if (!tableDoc.exists) throw new Error("Tavolo non trovato.");
+            if (tableDoc.data().status === 'attivo') throw new Error("Il tavolo è già occupato.");
+
+            t.update(reservationRef, { status: 'completata' });
+            t.update(tableRef, {
+                status: 'attivo',
+                sessionPin: pin,
+                guests: partySize,
+                activatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                cart: [], orders: {}, orderHistory: [], paidAt: null, ordersSentCount: 0
+            });
+            resultData = { ...reservationData, pin };
+        });
+
+        res.json({ 
+            success: true, 
+            pin: resultData.pin, 
+            tableName: resultData.tableName, 
+            customerName: resultData.customerName 
+        });
+
+    } catch(error) {
+        console.error("Errore durante il check-in:", error);
+        res.status(400).json({ error: error.message });
     }
 });
 
@@ -173,7 +208,6 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
         res.status(201).json({ success: true, message: 'Piatto aggiunto con successo!', dishId: docRef.id });
 
     } catch (error) {
-        console.error("Errore aggiunta piatto:", error);
         res.status(500).json({ error: 'Errore interno del server durante l\'aggiunta del piatto.' });
     }
 });
@@ -208,7 +242,6 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
         await docRef.update(updateData);
         res.json({ success: true, message: 'Piatto aggiornato!' });
     } catch (error) {
-        console.error("Errore aggiornamento piatto:", error);
         res.status(500).json({ error: 'Errore durante l\'aggiornamento del piatto.' });
     }
 });
@@ -236,7 +269,6 @@ app.post('/login', async (req, res) => {
             logoUrl: restaurantData.logoUrl || null
         });
     } catch (error) {
-        console.error("Errore login ristoratore:", error);
         res.status(500).json({ error: 'Errore interno del server.' });
     }
 });
@@ -281,7 +313,6 @@ app.post('/waiter-login', async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Errore waiter-login:", error);
         res.status(500).json({ error: 'Errore del server.' });
     }
 });
@@ -309,7 +340,6 @@ app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req,
         const finalData = (await docRef.get()).data();
         res.json({ success: true, message: 'Dati aggiornati!', nomeRistorante: finalData.nomeRistorante, logoUrl: finalData.logoUrl });
     } catch (error) {
-        console.error("Errore aggiornamento dettagli:", error);
         res.status(500).json({ error: 'Errore durante l\'aggiornamento.' });
     }
 });
@@ -338,7 +368,6 @@ app.post('/update-waiter-credentials/:docId', async (req, res) => {
         res.json({ success: true, message: 'Credenziali cameriere aggiornate!' });
 
     } catch (error) {
-        console.error("Errore aggiornamento credenziali cameriere:", error);
         res.status(500).json({ error: 'Errore durante l\'aggiornamento delle credenziali.' });
     }
 });
@@ -350,7 +379,6 @@ app.get('/restaurants', async (req, res) => {
         const restaurants = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         res.json(restaurants);
     } catch (error) {
-        console.error("Errore recupero ristoranti:", error);
         res.status(500).json({ error: 'Impossibile recuperare i ristoranti.' });
     }
 });
@@ -383,7 +411,6 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
         await db.collection('ristoranti').add(newRestaurant);
         res.status(201).json({ success: true, message: 'Ristorante creato con successo.' });
     } catch (error) {
-        console.error("Errore creazione ristorante:", error);
         res.status(500).json({ error: 'Errore nella creazione del ristorante.' });
     }
 });
@@ -404,7 +431,6 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
 
         res.json({ success: true, message: 'Ristorante e tutti i dati associati eliminati con successo.' });
     } catch (error) {
-        console.error("Errore eliminazione ristorante:", error);
         res.status(500).json({ error: 'Errore durante l\'eliminazione del ristorante.' });
     }
 });
@@ -435,7 +461,6 @@ app.post('/update-restaurant-admin/:docId', upload.single('logo'), async (req, r
         await docRef.update(updateData);
         res.json({ success: true, message: 'Dati aggiornati!' });
     } catch (error) {
-        console.error("Errore aggiornamento admin:", error);
         res.status(500).json({ error: 'Errore durante l\'aggiornamento.' });
     }
 });
@@ -485,7 +510,6 @@ app.get('/global-stats', async (req, res) => {
         res.json(allStats);
 
     } catch (error) {
-        console.error("Errore statistiche globali:", error);
         res.status(500).json({ error: 'Impossibile calcolare le statistiche globali.' });
     }
 });
@@ -503,8 +527,16 @@ app.get('/analytics/:restaurantId', async (req, res) => {
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
 
+        // Helper per formattare la data in YYYY-MM-DD locale (RISOLVE IL BUG DEL FUSO ORARIO)
+        const formatDateToLocalYYYYMMDD = (date) => {
+            const offset = date.getTimezoneOffset();
+            const adjustedDate = new Date(date.getTime() - (offset*60*1000));
+            return adjustedDate.toISOString().split('T')[0];
+        };
+
         const sessionsRef = db.collection(`ristoranti/${restaurantId}/historicSessions`);
-        const snapshot = await sessionsRef.get(); // Fetch all, filter in memory
+        // Query ottimizzata per fetchare solo i dati necessari
+        const snapshot = await sessionsRef.where('paidAt', '>=', start).where('paidAt', '<=', end).get();
 
         let totalRevenue = 0;
         let totalSessions = 0;
@@ -514,20 +546,12 @@ app.get('/analytics/:restaurantId', async (req, res) => {
 
         snapshot.forEach(doc => {
             const data = doc.data();
-            
-            // ANTI-CRASH FILTERING
-            if (!data.paidAt || typeof data.paidAt.toDate !== 'function') {
-                return; 
-            }
             const paidAtDate = data.paidAt.toDate();
-            if (paidAtDate < start || paidAtDate > end) {
-                return;
-            }
-
+            
             totalSessions++;
             totalRevenue += data.totalAmount || 0;
 
-            const dateKey = paidAtDate.toISOString().split('T')[0];
+            const dateKey = formatDateToLocalYYYYMMDD(paidAtDate);
             dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + (data.totalAmount || 0);
             dailySessions[dateKey] = (dailySessions[dateKey] || 0) + 1;
 
@@ -545,9 +569,9 @@ app.get('/analytics/:restaurantId', async (req, res) => {
 
         const formattedDailyData = (dataObj) => {
             const result = [];
-            const loopDate = new Date(start);
+            let loopDate = new Date(start);
             while (loopDate <= end) {
-                const dateKey = loopDate.toISOString().split('T')[0];
+                const dateKey = formatDateToLocalYYYYMMDD(loopDate);
                 result.push({
                     date: dateKey,
                     value: dataObj[dateKey] || 0
@@ -577,7 +601,6 @@ app.get('/cloudinary-usage', async (req, res) => {
         const usage = await cloudinary.api.usage({ credits: true });
         res.status(200).json(usage);
     } catch (error) {
-        console.error("Errore recupero utilizzo Cloudinary:", error);
         res.status(500).json({ error: "Impossibile recuperare i dati di utilizzo." });
     }
 });
