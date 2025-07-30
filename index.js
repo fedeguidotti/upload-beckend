@@ -5,7 +5,7 @@ const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs');
-const QRCode = require('qrcode'); // NUOVA DIPENDENZA per i QR Code
+const QRCode = require('qrcode');
 
 // --- INIZIALIZZAZIONE FIREBASE ADMIN ---
 try {
@@ -65,7 +65,7 @@ async function deleteCollection(collectionRef, batchSize = 100) {
     }
 }
 
-// --- NUOVA ROTTA PER GENERARE QR CODE ---
+// --- ROTTA PER GENERARE QR CODE ---
 app.post('/generate-qr', async (req, res) => {
     const { url } = req.body;
     if (!url) {
@@ -403,8 +403,8 @@ app.get('/global-stats', async (req, res) => {
 
         for (const restaurant of restaurants) {
             const sessionsSnapshot = await db.collection(`ristoranti/${restaurant.id}/historicSessions`)
-                .where('closedAt', '>=', start)
-                .where('closedAt', '<=', end)
+                .where('paidAt', '>=', start) // CORREZIONE: Usare paidAt
+                .where('paidAt', '<=', end)   // CORREZIONE: Usare paidAt
                 .get();
 
             let totalRevenue = 0, sessionCount = 0, dishesSold = 0;
@@ -446,7 +446,7 @@ app.get('/analytics/:restaurantId', async (req, res) => {
         end.setHours(23, 59, 59, 999);
 
         const sessionsRef = db.collection(`ristoranti/${restaurantId}/historicSessions`);
-        const q = sessionsRef.where('closedAt', '>=', start).where('closedAt', '<=', end);
+        const q = sessionsRef.where('paidAt', '>=', start).where('paidAt', '<=', end); // CORREZIONE: Usare paidAt
         const snapshot = await q.get();
 
         let totalRevenue = 0;
@@ -460,7 +460,7 @@ app.get('/analytics/:restaurantId', async (req, res) => {
             totalSessions++;
             totalRevenue += data.totalAmount || 0;
 
-            const dateKey = data.closedAt.toDate().toISOString().split('T')[0];
+            const dateKey = data.paidAt.toDate().toISOString().split('T')[0]; // CORREZIONE: Usare paidAt
             dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + (data.totalAmount || 0);
             dailySessions[dateKey] = (dailySessions[dateKey] || 0) + 1;
 
