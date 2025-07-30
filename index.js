@@ -38,7 +38,14 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: (req, file) => {
-    let folder = req.path.includes('dish') ? 'dish_images' : 'logos';
+    // Determina la cartella in base al percorso della richiesta
+    let folder = 'default';
+    if (req.path.includes('/add-dish') || req.path.includes('/update-dish')) {
+        folder = 'dish_images';
+    } else if (req.path.includes('/create-restaurant') || req.path.includes('/update-restaurant') || req.path.includes('/update-restaurant-details')) {
+        folder = 'logos';
+    }
+    
     return {
         folder: folder,
         allowed_formats: ['jpeg', 'png', 'jpg', 'webp'],
@@ -95,8 +102,8 @@ app.post('/restaurants/:docId/reservations', async (req, res) => {
     const { docId } = req.params;
     const { customerName, customerPhone, partySize, tableId, tableName, dateTime, status } = req.body;
 
-    if (!customerName || !partySize || !tableId || !dateTime) {
-        return res.status(400).json({ error: 'Dati della prenotazione incompleti.' });
+    if (!customerName || !partySize || !dateTime) {
+        return res.status(400).json({ error: 'Nome, numero persone e data/ora sono obbligatori.' });
     }
 
     try {
@@ -104,8 +111,8 @@ app.post('/restaurants/:docId/reservations', async (req, res) => {
             customerName,
             customerPhone: customerPhone || '',
             partySize: Number(partySize),
-            tableId,
-            tableName,
+            tableId: tableId || '',
+            tableName: tableName || 'Non assegnato',
             dateTime: admin.firestore.Timestamp.fromDate(new Date(dateTime)),
             status: status || 'confermata',
             createdAt: admin.firestore.FieldValue.serverTimestamp()
