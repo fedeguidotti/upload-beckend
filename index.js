@@ -1,22 +1,21 @@
 const express = require('express');
 const multer = require('multer');
-const cors =require('cors');
+const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs');
+const QRCode = require('qrcode'); // NUOVA DIPENDENZA per i QR Code
 
 // --- INIZIALIZZAZIONE FIREBASE ADMIN ---
 try {
-    // NOTA: Assicurati che il file 'firebase-service-account.json' sia presente nella stessa cartella.
     const serviceAccount = require('./firebase-service-account.json');
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
 } catch (error) {
     console.error("ERRORE CRITICO: File 'firebase-service-account.json' non trovato o non valido.");
-    console.error("Assicurati di aver scaricato il file della chiave privata dal tuo progetto Firebase e di averlo inserito nella directory del backend.");
-    process.exit(1); // Interrompe l'avvio del server se la configurazione di Firebase fallisce.
+    process.exit(1);
 }
 const db = admin.firestore();
 
@@ -24,7 +23,6 @@ const app = express();
 
 app.use(cors());
 app.options('*', cors()); 
-
 app.use(express.json());
 
 // --- CONFIGURAZIONE CLOUDINARY ---
@@ -38,63 +36,64 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: (req, file) => {
-    let folder;
-    // Assegna cartelle diverse per loghi e piatti per una migliore organizzazione
-    if (req.path.includes('dish')) {
-        folder = 'dish_images';
-    } else {
-        folder = 'logos';
-    }
+    let folder = req.path.includes('dish') ? 'dish_images' : 'logos';
     return {
         folder: folder,
         allowed_formats: ['jpeg', 'png', 'jpg', 'webp'],
-        transformation: [{ width: 500, height: 500, crop: 'limit' }] // Ottimizza le immagini
+        transformation: [{ width: 500, height: 500, crop: 'limit' }]
     };
   },
 });
 const upload = multer({ storage: storage });
 
 // --- FUNZIONE DI UTILITÀ PER LA CANCELLAZIONE RICORSIVA ---
-/**
- * Cancella una collezione e tutte le sue sottocollezioni in modo ricorsivo.
- * @param {admin.firestore.CollectionReference} collectionRef Riferimento alla collezione da cancellare.
- * @param {number} batchSize Dimensione dei batch per la cancellazione.
- */
 async function deleteCollection(collectionRef, batchSize = 100) {
     const query = collectionRef.limit(batchSize);
-  
     return new Promise((resolve, reject) => {
       deleteQueryBatch(query, resolve).catch(reject);
     });
   
     async function deleteQueryBatch(query, resolve) {
       const snapshot = await query.get();
-  
-      if (snapshot.size === 0) {
-        return resolve();
-      }
+      if (snapshot.size === 0) return resolve();
   
       const batch = db.batch();
-      snapshot.docs.forEach(doc => {
-        batch.delete(doc.ref);
-      });
+      snapshot.docs.forEach(doc => batch.delete(doc.ref));
       await batch.commit();
   
-      process.nextTick(() => {
-        deleteQueryBatch(query, resolve);
-      });
+      process.nextTick(() => deleteQueryBatch(query, resolve));
     }
 }
 
+// --- NUOVA ROTTA PER GENERARE QR CODE ---
+app.post('/generate-qr', async (req, res) => {
+    const { url } = req.body;
+    if (!url) {
+        return res.status(400).json({ error: 'URL is required' });
+    }
+    try {
+        const qrCodeDataUrl = await QRCode.toDataURL(url, {
+            errorCorrectionLevel: 'H',
+            type: 'image/png',
+            margin: 2,
+            color: {
+                dark:"#000000",
+                light:"#FFFFFF"
+            }
+        });
+        res.json({ qrCode: qrCodeDataUrl });
+    } catch (err) {
+        console.error('Failed to generate QR code', err);
+        res.status(500).json({ error: 'Failed to generate QR code' });
+    }
+});
 
 // --- ROTTE GESTIONE PIATTI ---
 app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
     const { restaurantId } = req.params;
     const { name, description, price, category } = req.body;
     const isExtraCharge = req.body.isExtraCharge === 'true';
-    
-    // BUG FIX: Gestisce correttamente gli allergeni da una stringa separata da virgole.
-    const allergens = req.body.allergens ? req.body.allergens.split(',').map(a => a.trim()).filter(Boolean) : [];
+    const allergens = req.body.allergens ? JSON.parse(req.body.allergens) : [];
 
     if (!name || !price || !category) {
         return res.status(400).json({ error: 'Nome, prezzo e categoria sono obbligatori.' });
@@ -106,9 +105,9 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
             description: description || '',
             price: parseFloat(price),
             category,
-            isAvailable: true, // Imposta la disponibilità a true di default
+            isAvailable: true,
             isSpecial: false,
-            isExtraCharge: isExtraCharge,
+            isExtraCharge,
             allergens,
             photoUrl: req.file ? req.file.path : null,
             createdAt: admin.firestore.FieldValue.serverTimestamp()
@@ -127,9 +126,7 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
     const { restaurantId, dishId } = req.params;
     const { name, description, price, category } = req.body;
     const isExtraCharge = req.body.isExtraCharge === 'true';
-
-    // BUG FIX: Gestisce correttamente gli allergeni da una stringa separata da virgole.
-    const allergens = req.body.allergens ? req.body.allergens.split(',').map(a => a.trim()).filter(Boolean) : [];
+    const allergens = req.body.allergens ? JSON.parse(req.body.allergens) : [];
 
     try {
         const docRef = db.collection(`ristoranti/${restaurantId}/menu`).doc(dishId);
@@ -143,7 +140,6 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
         };
 
         if (req.file) {
-            // Cancella la vecchia immagine da Cloudinary se esiste
             const oldData = docSnap.data();
             if (oldData.photoUrl && oldData.photoUrl.includes('cloudinary')) {
                 const publicId = oldData.photoUrl.split('/').pop().split('.')[0];
@@ -343,13 +339,11 @@ app.delete('/delete-restaurant/:docId', async (req, res) => {
         const docSnap = await docRef.get();
         if (!docSnap.exists) return res.status(404).json({ error: 'Ristorante non trovato.' });
 
-        // BUG FIX: Cancella ricorsivamente tutte le sottocollezioni prima di cancellare il documento principale.
         const collections = await docRef.listCollections();
         for (const collection of collections) {
             await deleteCollection(collection);
         }
 
-        // Ora cancella il documento principale
         await docRef.delete();
 
         res.json({ success: true, message: 'Ristorante e tutti i dati associati eliminati con successo.' });
@@ -400,7 +394,7 @@ app.get('/global-stats', async (req, res) => {
 
         const start = new Date(startDate);
         const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999); // Imposta la fine del giorno per includere tutti gli ordini
+        end.setHours(23, 59, 59, 999);
 
         const restaurantsSnapshot = await db.collection('ristoranti').get();
         const restaurants = restaurantsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -408,7 +402,6 @@ app.get('/global-stats', async (req, res) => {
         const allStats = [];
 
         for (const restaurant of restaurants) {
-            // BUG FIX: La collezione corretta è 'historicSessions' e non 'closedSessions'.
             const sessionsSnapshot = await db.collection(`ristoranti/${restaurant.id}/historicSessions`)
                 .where('closedAt', '>=', start)
                 .where('closedAt', '<=', end)
@@ -452,9 +445,8 @@ app.get('/analytics/:restaurantId', async (req, res) => {
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
 
-        // BUG FIX: La collezione corretta è 'historicSessions'
         const sessionsRef = db.collection(`ristoranti/${restaurantId}/historicSessions`);
-        const q = query(sessionsRef, where('closedAt', '>=', start), where('closedAt', '<=', end));
+        const q = sessionsRef.where('closedAt', '>=', start).where('closedAt', '<=', end);
         const snapshot = await q.get();
 
         let totalRevenue = 0;
