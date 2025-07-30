@@ -527,7 +527,6 @@ app.get('/analytics/:restaurantId', async (req, res) => {
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
 
-        // Helper per formattare la data in YYYY-MM-DD locale (RISOLVE IL BUG DEL FUSO ORARIO)
         const formatDateToLocalYYYYMMDD = (date) => {
             const offset = date.getTimezoneOffset();
             const adjustedDate = new Date(date.getTime() - (offset*60*1000));
@@ -535,7 +534,6 @@ app.get('/analytics/:restaurantId', async (req, res) => {
         };
 
         const sessionsRef = db.collection(`ristoranti/${restaurantId}/historicSessions`);
-        // Query ottimizzata per fetchare solo i dati necessari
         const snapshot = await sessionsRef.where('paidAt', '>=', start).where('paidAt', '<=', end).get();
 
         let totalRevenue = 0;
