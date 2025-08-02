@@ -325,6 +325,54 @@ app.post('/login', async (req, res) => {
     }
 });
 
+// NUOVA ROTTA PER LOGIN CAMERIERE UNIFICATO
+app.post('/waiter-login-simple', async (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Username e password sono obbligatori.' });
+    }
+
+    try {
+        const restaurantsSnapshot = await db.collection('ristoranti').get();
+        if (restaurantsSnapshot.empty) {
+            return res.status(401).json({ error: 'Nessun ristorante trovato.' });
+        }
+
+        let foundWaiter = null;
+
+        for (const doc of restaurantsSnapshot.docs) {
+            const restaurantData = doc.data();
+            const waiterCreds = restaurantData.settings?.waiterMode;
+
+            if (waiterCreds && waiterCreds.enabled && waiterCreds.username === username) {
+                const isPasswordCorrect = await bcrypt.compare(password, waiterCreds.passwordHash || '');
+                if (isPasswordCorrect) {
+                    foundWaiter = {
+                        success: true,
+                        docId: doc.id,
+                        restaurantId: restaurantData.restaurantId,
+                        nomeRistorante: restaurantData.nomeRistorante,
+                        logoUrl: restaurantData.logoUrl || null
+                    };
+                    break; // Esce dal ciclo appena trova una corrispondenza
+                }
+            }
+        }
+
+        if (foundWaiter) {
+            return res.json(foundWaiter);
+        } else {
+            // Se non trova il cameriere, restituisce un errore generico per sicurezza
+            return res.status(401).json({ success: false, error: 'Credenziali non valide.' });
+        }
+
+    } catch (error) {
+        console.error("Errore nel login cameriere unificato:", error);
+        res.status(500).json({ error: 'Errore del server durante il login del cameriere.' });
+    }
+});
+
+
 app.post('/waiter-login', async (req, res) => {
     const { restaurantId, username, password } = req.body;
     if (!restaurantId || !username || !password) {
