@@ -132,7 +132,6 @@ app.patch('/restaurants/:docId/reservations/:reservationId', async (req, res) =>
     }
 });
 
-// NUOVA ROTTA PER MODIFICARE I DETTAGLI DELLA PRENOTAZIONE
 app.put('/restaurants/:docId/reservations/:reservationId', async (req, res) => {
     const { docId, reservationId } = req.params;
     const { customerName, customerPhone, partySize, tableId, tableName, dateTime } = req.body;
@@ -325,7 +324,6 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// NUOVA ROTTA PER LOGIN CAMERIERE UNIFICATO
 app.post('/waiter-login-simple', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
@@ -354,7 +352,7 @@ app.post('/waiter-login-simple', async (req, res) => {
                         nomeRistorante: restaurantData.nomeRistorante,
                         logoUrl: restaurantData.logoUrl || null
                     };
-                    break; // Esce dal ciclo appena trova una corrispondenza
+                    break; 
                 }
             }
         }
@@ -362,7 +360,6 @@ app.post('/waiter-login-simple', async (req, res) => {
         if (foundWaiter) {
             return res.json(foundWaiter);
         } else {
-            // Se non trova il cameriere, restituisce un errore generico per sicurezza
             return res.status(401).json({ success: false, error: 'Credenziali non valide.' });
         }
 
@@ -371,7 +368,6 @@ app.post('/waiter-login-simple', async (req, res) => {
         res.status(500).json({ error: 'Errore del server durante il login del cameriere.' });
     }
 });
-
 
 app.post('/waiter-login', async (req, res) => {
     const { restaurantId, username, password } = req.body;
