@@ -6,6 +6,10 @@ const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs');
 const QRCode = require('qrcode');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const { body, validationResult } = require('express-validator');
+const cookieParser = require('cookie-parser');
 
 // --- INIZIALIZZAZIONE FIREBASE ADMIN ---
 try {
@@ -22,10 +26,44 @@ const db = admin.firestore();
 
 const app = express();
 
+// --- SECURITY MIDDLEWARE ---
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://fonts.googleapis.com"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://www.gstatic.com", "https://www.googletagmanager.com"],
+            fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            imgSrc: ["'self'", "data:", "https:", "blob:"],
+            connectSrc: ["'self'", "https://*.firebaseio.com", "https://*.googleapis.com", "wss://*.firebaseio.com", "https://upload-beckend.onrender.com"]
+        }
+    }
+}));
+
 // --- CONFIGURAZIONE CORS ROBUSTA ---
-app.use(cors());
+app.use(cors({
+    origin: true,
+    credentials: true
+}));
 app.options('*', cors()); 
 app.use(express.json());
+app.use(cookieParser());
+
+// --- RATE LIMITING ---
+// Global rate limiter
+const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: 'Troppe richieste da questo IP, riprova più tardi.'
+});
+
+// Strict rate limiter for auth endpoints
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5, // limit each IP to 5 requests per windowMs
+    skipSuccessfulRequests: true,
+    message: 'Troppi tentativi di accesso. Riprova tra 15 minuti.'
+});
 
 // --- CONFIGURAZIONE CLOUDINARY ---
 cloudinary.config({ 
@@ -299,7 +337,186 @@ app.post('/update-dish/:restaurantId/:dishId', upload.single('photo'), async (re
 
 
 // --- ROTTE DI LOGIN ---
-app.post('/login', async (req, res) => {
+// Input validation rules
+const restaurantValidationRules = () => {
+    return [
+        body('nomeRistorante')
+            .trim()
+            .notEmpty().withMessage('Nome ristorante è obbligatorio')
+            .isLength({ min: 2, max: 100 }).withMessage('Nome ristorante deve essere tra 2 e 100 caratteri')
+            .matches(/^[a-zA-Z0-9\s\-'àèéìòùÀÈÉÌÒÙ]+$/).withMessage('Nome ristorante contiene caratteri non validi'),
+        body('username')
+            .trim()
+            .notEmpty().withMessage('Username è obbligatorio')
+            .isLength({ min: 3, max: 50 }).withMessage('Username deve essere tra 3 e 50 caratteri')
+            .matches(/^[a-zA-Z0-9_-]+$/).withMessage('Username può contenere solo lettere, numeri, - e _'),
+        body('password')
+            .notEmpty().withMessage('Password è obbligatoria')
+            .isLength({ min: 6 }).withMessage('Password deve essere almeno 6 caratteri')
+            .matches(/^(?=.*[A-Za-z])(?=.*\d)/).withMessage('Password deve contenere almeno una lettera e un numero'),
+        body('email')
+            .trim()
+            .notEmpty().withMessage('Email è obbligatoria')
+            .isEmail().withMessage('Email non valida')
+            .normalizeEmail()
+    ];
+};
+
+const loginValidationRules = () => {
+    return [
+        body('username')
+            .trim()
+            .notEmpty().withMessage('Username è obbligatorio')
+            .escape(), // Prevent XSS
+        body('password')
+            .notEmpty().withMessage('Password è obbligatoria')
+    ];
+};
+
+const validate = (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ 
+            error: errors.array()[0].msg,
+            errors: errors.array() 
+        });
+    }
+    next();
+};
+
+// Forgot username endpoint
+app.post('/forgot-username', async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email è obbligatoria.' });
+    
+    try {
+        // Search for restaurant by email
+        const snapshot = await db.collection('ristoranti').where('email', '==', email.toLowerCase()).limit(1).get();
+        if (snapshot.empty) {
+            return res.status(404).json({ success: false, error: 'Email non trovata nel sistema.' });
+        }
+        
+        const restaurantDoc = snapshot.docs[0];
+        const restaurantData = restaurantDoc.data();
+        
+        // Log the username (in production, send email)
+        console.log(`\n=== RECUPERO USERNAME ===`);
+        console.log(`Email: ${email}`);
+        console.log(`Username: ${restaurantData.username}`);
+        console.log(`========================\n`);
+        
+        // In production, here you would send an email with:
+        // Subject: "Il tuo username per [Restaurant Name]"
+        // Body: "Ciao, il tuo username è: ${restaurantData.username}"
+        
+        res.json({ success: true, message: 'Username inviato via email.' });
+    } catch (error) {
+        console.error('Errore nel recupero username:', error);
+        res.status(500).json({ error: 'Errore del server.' });
+    }
+});
+
+// Forgot password endpoint (uses username to find email)
+app.post('/forgot-password', async (req, res) => {
+    const { username } = req.body;
+    if (!username) return res.status(400).json({ error: 'Username è obbligatorio.' });
+    
+    try {
+        // Search for restaurant by username
+        const snapshot = await db.collection('ristoranti').where('username', '==', username).limit(1).get();
+        if (snapshot.empty) {
+            return res.status(404).json({ success: false, error: 'Username non trovato.' });
+        }
+        
+        const restaurantDoc = snapshot.docs[0];
+        const restaurantData = restaurantDoc.data();
+        
+        // Generate a temporary reset token
+        const resetToken = require('crypto').randomBytes(32).toString('hex');
+        const resetExpires = new Date(Date.now() + 3600000); // 1 hour from now
+        
+        // Save the reset token to the database
+        await restaurantDoc.ref.update({
+            resetToken: resetToken,
+            resetTokenExpires: resetExpires
+        });
+        
+        // Mask email for security (show only first 2 chars and domain)
+        const email = restaurantData.email || '';
+        let maskedEmail = 'email non disponibile';
+        if (email) {
+            const [localPart, domain] = email.split('@');
+            if (localPart.length > 2) {
+                maskedEmail = localPart.substring(0, 2) + '*'.repeat(localPart.length - 2) + '@' + domain;
+            } else {
+                maskedEmail = '*'.repeat(localPart.length) + '@' + domain;
+            }
+        }
+        
+        // Log the reset link (in production, send email)
+        const resetLink = `https://yourapp.com/reset-password.html?token=${resetToken}`;
+        console.log(`\n=== RESET PASSWORD ===`);
+        console.log(`Username: ${username}`);
+        console.log(`Email: ${email}`);
+        console.log(`Reset Token: ${resetToken}`);
+        console.log(`Reset Link: ${resetLink}`);
+        console.log(`Valido fino a: ${resetExpires.toLocaleString()}`);
+        console.log(`======================\n`);
+        
+        // In production, here you would send an email with:
+        // Subject: "Reset password per il tuo account"
+        // Body: HTML template with the reset link
+        res.json({ 
+            success: true, 
+            message: 'Istruzioni inviate via email.',
+            maskedEmail: maskedEmail
+        });
+        
+    } catch (error) {
+        console.error('Error in forgot password:', error);
+        res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
+
+app.post('/reset-password', async (req, res) => {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) {
+        return res.status(400).json({ error: 'Token e nuova password sono obbligatori.' });
+    }
+    
+    try {
+        // Find restaurant with this reset token
+        const snapshot = await db.collection('ristoranti')
+            .where('resetToken', '==', token)
+            .where('resetTokenExpires', '>', new Date())
+            .limit(1)
+            .get();
+            
+        if (snapshot.empty) {
+            return res.status(400).json({ error: 'Token non valido o scaduto.' });
+        }
+        
+        const restaurantDoc = snapshot.docs[0];
+        
+        // Hash the new password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        
+        // Update password and remove reset token
+        await restaurantDoc.ref.update({
+            passwordHash: hashedPassword,
+            resetToken: admin.firestore.FieldValue.delete(),
+            resetTokenExpires: admin.firestore.FieldValue.delete()
+        });
+        
+        res.json({ success: true, message: 'Password reimpostata con successo.' });
+        
+    } catch (error) {
+        console.error('Error in reset password:', error);
+        res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
+
+app.post('/login', authLimiter, loginValidationRules(), validate, async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Username e password sono obbligatori.' });
     try {
@@ -324,7 +541,7 @@ app.post('/login', async (req, res) => {
     }
 });
 
-app.post('/waiter-login-simple', async (req, res) => {
+app.post('/waiter-login-simple', authLimiter, loginValidationRules(), validate, async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
         return res.status(400).json({ error: 'Username e password sono obbligatori.' });
@@ -369,7 +586,7 @@ app.post('/waiter-login-simple', async (req, res) => {
     }
 });
 
-app.post('/waiter-login', async (req, res) => {
+app.post('/waiter-login', authLimiter, async (req, res) => {
     const { restaurantId, username, password } = req.body;
     if (!restaurantId || !username || !password) {
         return res.status(400).json({ error: 'ID Ristorante, username e password sono obbligatori.' });
@@ -479,10 +696,25 @@ app.get('/restaurants', async (req, res) => {
     }
 });
 
-app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
-    const { nomeRistorante, username, password } = req.body;
-    if (!nomeRistorante || !username || !password) return res.status(400).json({ error: 'Dati mancanti.' });
+app.post('/create-restaurant', upload.single('logo'), restaurantValidationRules(), validate, async (req, res) => {
+    const { nomeRistorante, username, password, email } = req.body;
+    if (!nomeRistorante || !username || !password || !email) {
+        return res.status(400).json({ error: 'Tutti i campi sono obbligatori (nome, username, password, email).' });
+    }
+    
     try {
+        // Check if email already exists
+        const emailCheck = await db.collection('ristoranti').where('email', '==', email.toLowerCase()).get();
+        if (!emailCheck.empty) {
+            return res.status(400).json({ error: 'Email già registrata nel sistema.' });
+        }
+        
+        // Check if username already exists
+        const usernameCheck = await db.collection('ristoranti').where('username', '==', username).get();
+        if (!usernameCheck.empty) {
+            return res.status(400).json({ error: 'Username già in uso.' });
+        }
+        
         const salt = bcrypt.genSaltSync(10);
         const passwordHash = bcrypt.hashSync(password, salt);
         const restaurantId = nomeRistorante.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString().slice(-5);
@@ -503,7 +735,10 @@ app.post('/create-restaurant', upload.single('logo'), async (req, res) => {
         };
 
         const newRestaurant = {
-            nomeRistorante, username, passwordHash,
+            nomeRistorante, 
+            username, 
+            passwordHash,
+            email: email.toLowerCase(),
             restaurantId,
             logoUrl: req.file ? req.file.path : null,
             settings: defaultSettings,
