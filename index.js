@@ -686,6 +686,77 @@ app.post('/update-waiter-credentials/:docId', async (req, res) => {
 });
 
 // --- ROTTE SUPER ADMIN ---
+
+// Toggle restaurant status (hide/show)
+app.post('/toggle-restaurant-status/:restaurantId', async (req, res) => {
+    const { restaurantId } = req.params;
+    const { hide } = req.body;
+    
+    try {
+        const restaurantDoc = db.collection('ristoranti').doc(restaurantId);
+        const doc = await restaurantDoc.get();
+        
+        if (!doc.exists) {
+            return res.status(404).json({ error: 'Ristorante non trovato' });
+        }
+        
+        await restaurantDoc.update({
+            hidden: hide
+        });
+        
+        res.json({ 
+            success: true, 
+            message: hide ? 'Ristorante disattivato' : 'Ristorante attivato' 
+        });
+    } catch (error) {
+        console.error('Errore toggle status:', error);
+        res.status(500).json({ error: 'Errore durante l\'aggiornamento dello stato' });
+    }
+});
+
+// Update restaurant info
+app.put('/restaurant/:restaurantId', upload.single('logo'), async (req, res) => {
+    const { restaurantId } = req.params;
+    const { nomeRistorante, username, email, password } = req.body;
+    
+    try {
+        const restaurantDoc = db.collection('ristoranti').doc(restaurantId);
+        const doc = await restaurantDoc.get();
+        
+        if (!doc.exists) {
+            return res.status(404).json({ error: 'Ristorante non trovato' });
+        }
+        
+        const updateData = {};
+        
+        // Update basic info
+        if (nomeRistorante) updateData.nomeRistorante = nomeRistorante;
+        if (username) updateData.username = username;
+        if (email) updateData.email = email.toLowerCase();
+        
+        // Update password if provided
+        if (password) {
+            const hashedPassword = await bcrypt.hash(password, 10);
+            updateData.password = hashedPassword;
+        }
+        
+        // Update logo if provided
+        if (req.file && req.file.path) {
+            updateData.logoUrl = req.file.path;
+        }
+        
+        await restaurantDoc.update(updateData);
+        
+        res.json({ 
+            success: true, 
+            message: 'Ristorante aggiornato con successo' 
+        });
+    } catch (error) {
+        console.error('Errore aggiornamento ristorante:', error);
+        res.status(500).json({ error: 'Errore durante l\'aggiornamento del ristorante' });
+    }
+});
+
 app.get('/restaurants', async (req, res) => {
     try {
         const snapshot = await db.collection('ristoranti').get();
