@@ -700,7 +700,7 @@ app.post('/toggle-restaurant-status/:restaurantId', async (req, res) => {
             return res.status(404).json({ error: 'Ristorante non trovato' });
         }
         
-        await restaurantDoc.update({
+        await restaurantDoc.ref.update({
             hidden: hide
         });
         
