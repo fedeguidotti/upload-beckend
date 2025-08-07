@@ -444,11 +444,11 @@ app.post('/forgot-password', async (req, res) => {
         // Mask email for security (show only first 2 chars and domain)
         const email = restaurantData.email || '';
         let maskedEmail = 'email non disponibile';
-        if (email) {
+        if (email && email.includes('@')) {
             const [localPart, domain] = email.split('@');
-            if (localPart.length > 2) {
+            if (localPart && localPart.length > 2) {
                 maskedEmail = localPart.substring(0, 2) + '*'.repeat(localPart.length - 2) + '@' + domain;
-            } else {
+            } else if (localPart) {
                 maskedEmail = '*'.repeat(localPart.length) + '@' + domain;
             }
         }
