@@ -124,7 +124,11 @@ app.post('/generate-qr', async (req, res) => {
             margin: 2,
             color: { dark:"#000000", light:"#FFFFFF" }
         });
-        res.json({ qrCode: qrCodeDataUrl });
+        res.json({
+            totalGuests,
+            dailyGuests: formattedDailyData(dailyGuests).map(d => ({ date: d.date, guests: d.value })),
+            dailyAvgSpend,
+         qrCode: qrCodeDataUrl });
     } catch (err) {
         res.status(500).json({ error: 'Failed to generate QR code' });
     }
@@ -946,9 +950,11 @@ app.get('/analytics/:restaurantId', async (req, res) => {
 
         let totalRevenue = 0;
         let totalSessions = 0;
+        let totalGuests = 0;
         const topDishes = {};
         const dailyRevenue = {};
         const dailySessions = {};
+        const dailyGuests = {};
 
         snapshot.forEach(doc => {
             const data = doc.data();
@@ -956,10 +962,12 @@ app.get('/analytics/:restaurantId', async (req, res) => {
             
             totalSessions++;
             totalRevenue += data.totalAmount || 0;
+            totalGuests += data.guests || 0;
 
             const dateKey = formatDateToLocalYYYYMMDD(paidAtDate);
             dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + (data.totalAmount || 0);
             dailySessions[dateKey] = (dailySessions[dateKey] || 0) + 1;
+            dailyGuests[dateKey] = (dailyGuests[dateKey] || 0) + (data.guests || 0);
 
             (data.orders || []).forEach(item => {
                 if (item.name && typeof item.quantity === 'number') {
@@ -967,6 +975,12 @@ app.get('/analytics/:restaurantId', async (req, res) => {
                 }
             });
         });
+
+        
+const dailyAvgSpend = formattedDailyData(dailyGuests).map(d => ({
+    date: d.date,
+    avg: (d.value && dailyRevenue[d.date] ? (dailyRevenue[d.date] / d.value) : 0)
+}));
 
         const formattedTopDishes = Object.entries(topDishes)
             .map(([name, quantity]) => ({ name, quantity }))
