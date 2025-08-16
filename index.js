@@ -137,7 +137,7 @@ app.post('/generate-qr', async (req, res) => {
 // --- ROTTE GESTIONE PRENOTAZIONI ---
 app.post('/restaurants/:docId/reservations', async (req, res) => {
     const { docId } = req.params;
-    const { customerName, customerPhone, partySize, tableId, tableName, dateTime } = req.body;
+    const { customerName, customerPhone, partySize, tableId, tableName, dateTime, dinnerDuration } = req.body;
 
     if (!customerName || !partySize || !dateTime) {
         return res.status(400).json({ error: 'Nome, numero persone e data/ora sono obbligatori.' });
@@ -150,11 +150,13 @@ app.post('/restaurants/:docId/reservations', async (req, res) => {
             tableId: tableId || '',
             tableName: tableName || 'Non assegnato',
             dateTime: admin.firestore.Timestamp.fromDate(new Date(dateTime)),
+            dinnerDuration: Number(dinnerDuration) || 90, // Store dinner duration in minutes
             status: 'confermata',
             createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
         res.status(201).json({ success: true, id: docRef.id });
     } catch (error) {
+        console.error('Error creating reservation:', error);
         res.status(500).json({ error: 'Errore interno del server.' });
     }
 });
@@ -176,7 +178,7 @@ app.patch('/restaurants/:docId/reservations/:reservationId', async (req, res) =>
 
 app.put('/restaurants/:docId/reservations/:reservationId', async (req, res) => {
     const { docId, reservationId } = req.params;
-    const { customerName, customerPhone, partySize, tableId, tableName, dateTime } = req.body;
+    const { customerName, customerPhone, partySize, tableId, tableName, dateTime, dinnerDuration } = req.body;
 
     if (!customerName || !partySize || !dateTime) {
         return res.status(400).json({ error: 'Nome, numero persone e data/ora sono obbligatori.' });
@@ -195,6 +197,8 @@ app.put('/restaurants/:docId/reservations/:reservationId', async (req, res) => {
             tableId: tableId || '',
             tableName: tableName || 'Non assegnato',
             dateTime: admin.firestore.Timestamp.fromDate(new Date(dateTime)),
+            dinnerDuration: Number(dinnerDuration) || 90 // Update dinner duration
+        });
         });
         res.json({ success: true, message: 'Prenotazione aggiornata con successo.' });
     } catch (error) {
@@ -284,6 +288,10 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
     }
 
     try {
+        // Get current maximum order value to append new dish at the end
+        const menuSnapshot = await db.collection(`ristoranti/${restaurantId}/menu`).orderBy('order', 'desc').limit(1).get();
+        const maxOrder = menuSnapshot.empty ? 0 : (menuSnapshot.docs[0].data().order || 0);
+
         const newDishData = {
             name,
             description: description || '',
@@ -294,6 +302,7 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
             isExtraCharge,
             allergens,
             photoUrl: req.file ? req.file.path : null,
+            order: maxOrder + 1, // Add order field for consistent positioning
             createdAt: admin.firestore.FieldValue.serverTimestamp()
         };
 
@@ -301,6 +310,7 @@ app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => 
         res.status(201).json({ success: true, message: 'Piatto aggiunto con successo!', dishId: docRef.id });
 
     } catch (error) {
+        console.error('Error adding dish:', error);
         res.status(500).json({ error: 'Errore interno del server durante l\'aggiunta del piatto.' });
     }
 });
