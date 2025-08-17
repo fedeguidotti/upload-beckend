@@ -644,7 +644,6 @@ app.post('/waiter-login', authLimiter, async (req, res) => {
     }
 });
 
-
 // --- ROTTE GESTIONE RISTORATORE (DASHBOARD) ---
 app.post('/update-restaurant-details/:docId', upload.single('logo'), async (req, res) => {
     const { docId } = req.params;
@@ -1055,3 +1054,55 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server attivo su http://localhost:${PORT}`));
+
+// --- NUOVE ROTTE UNIFICATE ---
+app.post('/unified-login', authLimiter, loginValidationRules(), validate, async (req, res) => {
+    const { username, password } = req.body;
+    try {
+        // 1. Tentativo CAMERIERE (scan ristoranti)
+        const restaurantsSnapshot = await db.collection('ristoranti').get();
+        for (const docSnap of restaurantsSnapshot.docs) {
+            const data = docSnap.data();
+            const waiter = data.settings?.waiterMode;
+            if (waiter?.enabled && waiter.username === username) {
+                if (waiter.passwordHash && await bcrypt.compare(password, waiter.passwordHash)) {
+                    return res.json({
+                        success: true,
+                        userType: 'waiter',
+                        docId: docSnap.id,
+                        restaurantId: data.restaurantId,
+                        nomeRistorante: data.nomeRistorante,
+                        logoUrl: data.logoUrl || null
+                    });
+                } else {
+                    // username match ma password sbagliata → interrompo senza provare owner (comportamento coerente)
+                    return res.status(401).json({ success:false, error:'Credenziali non valide.' });
+                }
+            }
+        }
+
+        // 2. Tentativo RISTORATORE (match diretto su username)
+        const ownerSnapshot = await db.collection('ristoranti').where('username', '==', username).limit(1).get();
+        if (!ownerSnapshot.empty) {
+            const docSnap = ownerSnapshot.docs[0];
+            const data = docSnap.data();
+            const ok = await bcrypt.compare(password, data.passwordHash || '');
+            if (ok) {
+                return res.json({
+                    success: true,
+                    userType: 'owner',
+                    docId: docSnap.id,
+                    restaurantId: data.restaurantId,
+                    nomeRistorante: data.nomeRistorante,
+                    logoUrl: data.logoUrl || null
+                });
+            }
+            return res.status(401).json({ success:false, error:'Credenziali non valide.' });
+        }
+
+        return res.status(401).json({ success:false, error:'Credenziali non valide.' });
+    } catch (error) {
+        console.error('Unified login error:', error);
+        res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
