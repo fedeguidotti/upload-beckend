@@ -10,7 +10,26 @@ const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const { body, validationResult } = require('express-validator');
 const cookieParser = require('cookie-parser');
-const nodemailer = require('nodemailer'); // <--- aggiunto
+
+// Sostituisci la require diretta di nodemailer con try/catch
+let nodemailer=null, mailer=null;
+try {
+  nodemailer = require('nodemailer');
+  // Inizializza solo se variabili SMTP presenti
+  if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+    mailer = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: /^true$/i.test(process.env.SMTP_SECURE || 'false'),
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+    });
+    console.log('Mailer attivo.');
+  } else {
+    console.log('Mailer inattivo: variabili SMTP mancanti.');
+  }
+} catch (err) {
+  console.log('nodemailer non installato: email disabilitate (ok in ambienti senza mailing).');
+}
 
 // --- INIZIALIZZAZIONE FIREBASE ADMIN ---
 try {
@@ -419,7 +438,7 @@ app.post('/forgot-username', async (req, res) => {
                 text: body
             });
         } else {
-            console.log('[NO SMTP] INVIO USERNAME\n', body);
+            console.log('[MAIL DISABLED] Body:', body);
         }
 
         res.json({ success: true, message: 'Username inviato via email.', usernameHint: data.username[0] });
@@ -463,7 +482,7 @@ app.post('/forgot-password', async (req, res) => {
                 text: body
             });
         } else {
-            console.log('[NO SMTP] RESET PASSWORD\n', body);
+            console.log('[MAIL DISABLED] Body:', body);
         }
 
         res.json({ success: true, message: 'Istruzioni inviate via email.', maskedEmail });
@@ -686,26 +705,15 @@ app.post('/update-waiter-credentials/:docId', async (req, res) => {
 app.post('/toggle-restaurant-status/:restaurantId', async (req, res) => {
     const { restaurantId } = req.params;
     const { hide } = req.body;
-    
     try {
         const restaurantDoc = db.collection('ristoranti').doc(restaurantId);
-        const doc = await restaurantDoc.get();
-        
-        if (!doc.exists) {
-            return res.status(404).json({ error: 'Ristorante non trovato' });
-        }
-        
-        await restaurantDoc.ref.update({
-            hidden: hide
-        });
-        
-        res.json({ 
-            success: true, 
-            message: hide ? 'Ristorante disattivato' : 'Ristorante attivato' 
-        });
-    } catch (error) {
-        console.error('Errore toggle status:', error);
-        res.status(500).json({ error: 'Errore durante l\'aggiornamento dello stato' });
+        const snap = await restaurantDoc.get();
+        if (!snap.exists) return res.status(404).json({ error: 'Ristorante non trovato' });
+        await restaurantDoc.update({ hidden: hide });
+        res.json({ success:true, message: hide ? 'Ristorante disattivato' : 'Ristorante attivato' });
+    } catch (e) {
+        console.error('Errore toggle status:', e);
+        res.status(500).json({ error: 'Errore durante aggiornamento stato' });
     }
 });
 
@@ -731,8 +739,7 @@ app.put('/restaurant/:restaurantId', upload.single('logo'), async (req, res) => 
         
         // Update password if provided
         if (password) {
-            const hashedPassword = await bcrypt.hash(password, 10);
-            updateData.password = hashedPassword;
+            updateData.passwordHash = await bcrypt.hash(password, 10);
         }
         
         // Update logo if provided
