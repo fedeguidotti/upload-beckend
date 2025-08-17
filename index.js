@@ -1106,3 +1106,35 @@ app.post('/unified-login', authLimiter, loginValidationRules(), validate, async 
         res.status(500).json({ error: 'Errore interno del server.' });
     }
 });
+
+// --- ROTTA (NUOVA) PER ORDINARE I PIATTI (future-proof) ---
+app.post('/update-dishes-order/:restaurantId', async (req, res) => {
+    const { restaurantId } = req.params;
+    const { dishesOrder } = req.body; // accetta: [{dishId, order}] oppure array semplice di dishId
+
+    if (!dishesOrder || !Array.isArray(dishesOrder) || dishesOrder.length === 0) {
+        return res.status(400).json({ error: 'Ordine piatti non valido.' });
+    }
+
+    try {
+        const batch = db.batch();
+        if (typeof dishesOrder[0] === 'string') {
+            dishesOrder.forEach((dishId, idx) => {
+                const ref = db.collection(`ristoranti/${restaurantId}/menu`).doc(dishId);
+                batch.update(ref, { order: idx });
+            });
+        } else {
+            dishesOrder.forEach(item => {
+                if (item && item.dishId != null && typeof item.order === 'number') {
+                    const ref = db.collection(`ristoranti/${restaurantId}/menu`).doc(item.dishId);
+                    batch.update(ref, { order: item.order });
+                }
+            });
+        }
+        await batch.commit();
+        res.json({ success: true, message: 'Ordine piatti aggiornato.' });
+    } catch (error) {
+        console.error('Errore update dishes order:', error);
+        res.status(500).json({ error: 'Errore aggiornamento ordine piatti.' });
+    }
+});
