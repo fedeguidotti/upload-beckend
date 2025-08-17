@@ -195,10 +195,9 @@ app.put('/restaurants/:docId/reservations/:reservationId', async (req, res) => {
             tableId: tableId || '',
             tableName: tableName || 'Non assegnato',
             dateTime: admin.firestore.Timestamp.fromDate(new Date(dateTime)),
-            dinnerDuration: Number(dinnerDuration) || 90 // Update dinner duration
+            dinnerDuration: Number(dinnerDuration) || 90
         });
-        });
-        res.json({ success: true, message: 'Prenotazione aggiornata con successo.' });
+        return res.json({ success: true, message: 'Prenotazione aggiornata con successo.' });
     } catch (error) {
         console.error("Errore aggiornamento prenotazione:", error);
         res.status(500).json({ error: 'Errore interno del server.' });
