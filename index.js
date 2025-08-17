@@ -10,6 +10,7 @@ const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const { body, validationResult } = require('express-validator');
 const cookieParser = require('cookie-parser');
+const nodemailer = require('nodemailer'); // <--- aggiunto
 
 // --- INIZIALIZZAZIONE FIREBASE ADMIN ---
 try {
@@ -399,30 +400,31 @@ const validate = (req, res, next) => {
 app.post('/forgot-username', async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'Email è obbligatoria.' });
-    
     try {
-        // Search for restaurant by email
         const snapshot = await db.collection('ristoranti').where('email', '==', email.toLowerCase()).limit(1).get();
         if (snapshot.empty) {
             return res.status(404).json({ success: false, error: 'Email non trovata nel sistema.' });
         }
-        
         const restaurantDoc = snapshot.docs[0];
-        const restaurantData = restaurantDoc.data();
-        
-        // Log the username (in production, send email)
-        console.log(`\n=== RECUPERO USERNAME ===`);
-        console.log(`Email: ${email}`);
-        console.log(`Username: ${restaurantData.username}`);
-        console.log(`========================\n`);
-        
-        // In production, here you would send an email with:
-        // Subject: "Il tuo username per [Restaurant Name]"
-        // Body: "Ciao, il tuo username è: ${restaurantData.username}"
-        
-        res.json({ success: true, message: 'Username inviato via email.' });
-    } catch (error) {
-        console.error('Errore nel recupero username:', error);
+        const data = restaurantDoc.data();
+
+        const subject = 'Recupero Username - Pannello Ristorante';
+        const body = `Ciao,\n\nIl tuo username è: ${data.username}\n\nSe non hai richiesto tu questa operazione ignora la mail.`;
+
+        if (mailer) {
+            await mailer.sendMail({
+                from: process.env.SMTP_FROM || process.env.SMTP_USER,
+                to: email,
+                subject,
+                text: body
+            });
+        } else {
+            console.log('[NO SMTP] INVIO USERNAME\n', body);
+        }
+
+        res.json({ success: true, message: 'Username inviato via email.', usernameHint: data.username[0] });
+    } catch (e) {
+        console.error('Errore recupero username:', e);
         res.status(500).json({ error: 'Errore del server.' });
     }
 });
@@ -431,58 +433,40 @@ app.post('/forgot-username', async (req, res) => {
 app.post('/forgot-password', async (req, res) => {
     const { username } = req.body;
     if (!username) return res.status(400).json({ error: 'Username è obbligatorio.' });
-    
     try {
-        // Search for restaurant by username
         const snapshot = await db.collection('ristoranti').where('username', '==', username).limit(1).get();
-        if (snapshot.empty) {
-            return res.status(404).json({ success: false, error: 'Username non trovato.' });
-        }
-        
+        if (snapshot.empty) return res.status(404).json({ success: false, error: 'Username non trovato.' });
+
         const restaurantDoc = snapshot.docs[0];
-        const restaurantData = restaurantDoc.data();
-        
-        // Generate a temporary reset token
+        const data = restaurantDoc.data();
         const resetToken = require('crypto').randomBytes(32).toString('hex');
-        const resetExpires = new Date(Date.now() + 3600000); // 1 hour from now
-        
-        // Save the reset token to the database
-        await restaurantDoc.ref.update({
-            resetToken: resetToken,
-            resetTokenExpires: resetExpires
-        });
-        
-        // Mask email for security (show only first 2 chars and domain)
-        const email = restaurantData.email || '';
+        const resetExpires = new Date(Date.now() + 3600000);
+        await restaurantDoc.ref.update({ resetToken, resetTokenExpires: resetExpires });
+
+        const email = data.email;
         let maskedEmail = 'email non disponibile';
         if (email && email.includes('@')) {
             const [localPart, domain] = email.split('@');
-            if (localPart && localPart.length > 2) {
-                maskedEmail = localPart.substring(0, 2) + '*'.repeat(localPart.length - 2) + '@' + domain;
-            } else if (localPart) {
-                maskedEmail = '*'.repeat(localPart.length) + '@' + domain;
-            }
+            maskedEmail =
+                localPart.slice(0,2) + '*'.repeat(Math.max(0, localPart.length-2)) + '@' + domain;
         }
-        
-        // Log the reset link (in production, send email)
+
         const resetLink = `https://yourapp.com/reset-password.html?token=${resetToken}`;
-        console.log(`\n=== RESET PASSWORD ===`);
-        console.log(`Username: ${username}`);
-        console.log(`Email: ${email}`);
-        console.log(`Reset Token: ${resetToken}`);
-        console.log(`Reset Link: ${resetLink}`);
-        console.log(`Valido fino a: ${resetExpires.toLocaleString()}`);
-        console.log(`======================\n`);
-        
-        // In production, here you would send an email with:
-        // Subject: "Reset password per il tuo account"
-        // Body: HTML template with the reset link
-        res.json({ 
-            success: true, 
-            message: 'Istruzioni inviate via email.',
-            maskedEmail: maskedEmail
-        });
-        
+        const subject = 'Reset Password - Pannello Ristorante';
+        const body = `Ciao,\n\nHai richiesto un reset password.\nUsa il seguente link (valido 1 ora):\n${resetLink}\n\nSe non hai richiesto tu questa operazione ignora la mail.`;
+
+        if (mailer) {
+            await mailer.sendMail({
+                from: process.env.SMTP_FROM || process.env.SMTP_USER,
+                to: email,
+                subject,
+                text: body
+            });
+        } else {
+            console.log('[NO SMTP] RESET PASSWORD\n', body);
+        }
+
+        res.json({ success: true, message: 'Istruzioni inviate via email.', maskedEmail });
     } catch (error) {
         console.error('Error in forgot password:', error);
         res.status(500).json({ error: 'Errore interno del server.' });
