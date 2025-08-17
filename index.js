@@ -124,13 +124,11 @@ app.post('/generate-qr', async (req, res) => {
             margin: 2,
             color: { dark:"#000000", light:"#FFFFFF" }
         });
-        res.json({
-            totalGuests,
-            dailyGuests: formattedDailyData(dailyGuests).map(d => ({ date: d.date, guests: d.value })),
-            dailyAvgSpend,
-         qrCode: qrCodeDataUrl });
+        // Removed undefined fields (totalGuests, dailyGuests, dailyAvgSpend) that caused 500
+        return res.json({ success: true, qrCode: qrCodeDataUrl });
     } catch (err) {
-        res.status(500).json({ error: 'Failed to generate QR code' });
+        console.error('QR generation error:', err);
+        return res.status(500).json({ error: 'Failed to generate QR code' });
     }
 });
 
@@ -936,92 +934,118 @@ app.get('/global-stats', async (req, res) => {
     }
 });
 
-app.get('/analytics/:restaurantId', async (req, res) => {
-    const { restaurantId } = req.params;
+/**
+ * Analytics endpoint consumed by dashboard.html
+ * GET /analytics/:docId?startDate=ISO&endDate=ISO
+ * Returns:
+ * {
+ *   totalRevenue, totalSessions,
+ *   dailyRevenue: [{date:'YYYY-MM-DD', revenue:Number}],
+ *   dailySessions: [{date:'YYYY-MM-DD', sessions:Number}],
+ *   topDishes: [{name, quantity}]
+ * }
+ */
+app.get('/analytics/:docId', async (req, res) => {
+    const { docId } = req.params;
     const { startDate, endDate } = req.query;
 
-    if (!startDate || !endDate) {
-        return res.status(400).json({ error: 'Date di inizio e fine richieste.' });
+    let start, end;
+    try {
+        if (startDate && endDate) {
+            start = new Date(startDate);
+            end = new Date(endDate);
+        } else {
+            // Default: last 7 days
+            end = new Date();
+            start = new Date();
+            start.setDate(end.getDate() - 6);
+        }
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+            return res.status(400).json({ error: 'Parametri data non validi.' });
+        }
+        // Normalize boundaries
+        start.setHours(0,0,0,0);
+        end.setHours(23,59,59,999);
+    } catch (e) {
+        return res.status(400).json({ error: 'Formattazione date non valida.' });
     }
 
     try {
-        const start = new Date(startDate);
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
+        // Verify restaurant doc exists (optional but defensive)
+        const restoRef = db.collection('ristoranti').doc(docId);
+        const restoSnap = await restoRef.get();
+        if (!restoSnap.exists) {
+            return res.status(404).json({ error: 'Ristorante non trovato.' });
+        }
 
-        const formatDateToLocalYYYYMMDD = (date) => {
-            const offset = date.getTimezoneOffset();
-            const adjustedDate = new Date(date.getTime() - (offset*60*1000));
-            return adjustedDate.toISOString().split('T')[0];
-        };
+        const sessionsRef = db.collection(`ristoranti/${docId}/historicSessions`)
+            .where('paidAt', '>=', admin.firestore.Timestamp.fromDate(start))
+            .where('paidAt', '<=', admin.firestore.Timestamp.fromDate(end));
 
-        const sessionsRef = db.collection(`ristoranti/${restaurantId}/historicSessions`);
-        const snapshot = await sessionsRef.where('paidAt', '>=', start).where('paidAt', '<=', end).get();
+        const snap = await sessionsRef.get();
 
         let totalRevenue = 0;
         let totalSessions = 0;
-        let totalGuests = 0;
-        const topDishes = {};
-        const dailyRevenue = {};
-        const dailySessions = {};
-        const dailyGuests = {};
 
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            const paidAtDate = data.paidAt.toDate();
-            
-            totalSessions++;
-            totalRevenue += data.totalAmount || 0;
-            totalGuests += data.guests || 0;
+        const dayRevenueMap = new Map();   // dateStr -> revenue
+        const daySessionsMap = new Map();  // dateStr -> count
+        const dishesMap = new Map();       // dishName -> quantity
 
-            const dateKey = formatDateToLocalYYYYMMDD(paidAtDate);
-            dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + (data.totalAmount || 0);
-            dailySessions[dateKey] = (dailySessions[dateKey] || 0) + 1;
-            dailyGuests[dateKey] = (dailyGuests[dateKey] || 0) + (data.guests || 0);
+        snap.forEach(docSnap => {
+            const data = docSnap.data() || {};
+            const paidAtTs = data.paidAt;
+            if (!paidAtTs) return;
 
-            (data.orders || []).forEach(item => {
-                if (item.name && typeof item.quantity === 'number') {
-                    topDishes[item.name] = (topDishes[item.name] || 0) + item.quantity;
-                }
+            const paidAtDate = paidAtTs.toDate();
+            const dateStr = paidAtDate.toISOString().slice(0,10);
+
+            const sessionRevenue = Number(data.totalAmount) || 0;
+            totalRevenue += sessionRevenue;
+            totalSessions += 1;
+
+            dayRevenueMap.set(dateStr, (dayRevenueMap.get(dateStr) || 0) + sessionRevenue);
+            daySessionsMap.set(dateStr, (daySessionsMap.get(dateStr) || 0) + 1);
+
+            const orders = Array.isArray(data.orders) ? data.orders : [];
+            orders.forEach(item => {
+                if (!item || !item.name) return;
+                const qty = Number(item.quantity) || 1;
+                dishesMap.set(item.name, (dishesMap.get(item.name) || 0) + qty);
             });
         });
 
-        
-const dailyAvgSpend = formattedDailyData(dailyGuests).map(d => ({
-    date: d.date,
-    avg: (d.value && dailyRevenue[d.date] ? (dailyRevenue[d.date] / d.value) : 0)
-}));
+        // Build continuous date range for daily arrays
+        const dailyRevenue = [];
+        const dailySessions = [];
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+            const dateStr = d.toISOString().slice(0,10);
+            dailyRevenue.push({
+                date: dateStr,
+                revenue: Number((dayRevenueMap.get(dateStr) || 0).toFixed(2))
+            });
+            dailySessions.push({
+                date: dateStr,
+                sessions: daySessionsMap.get(dateStr) || 0
+            });
+        }
 
-        const formattedTopDishes = Object.entries(topDishes)
+        // Top dishes (sorted desc by quantity)
+        const topDishes = Array.from(dishesMap.entries())
             .map(([name, quantity]) => ({ name, quantity }))
-            .sort((a, b) => b.quantity - a.quantity)
-            .slice(0, 10);
+            .sort((a,b) => b.quantity - a.quantity)
+            .slice(0, 50); // cap for safety
 
-        const formattedDailyData = (dataObj) => {
-            const result = [];
-            let loopDate = new Date(start);
-            while (loopDate <= end) {
-                const dateKey = formatDateToLocalYYYYMMDD(loopDate);
-                result.push({
-                    date: dateKey,
-                    value: dataObj[dateKey] || 0
-                });
-                loopDate.setDate(loopDate.getDate() + 1);
-            }
-            return result;
-        };
-
-        res.json({
-            totalRevenue,
+        return res.json({
+            success: true,
+            totalRevenue: Number(totalRevenue.toFixed(2)),
             totalSessions,
-            topDishes: formattedTopDishes,
-            dailyRevenue: formattedDailyData(dailyRevenue).map(d => ({ date: d.date, revenue: d.value })),
-            dailySessions: formattedDailyData(dailySessions).map(d => ({ date: d.date, sessions: d.value }))
+            dailyRevenue,
+            dailySessions,
+            topDishes
         });
-
     } catch (error) {
-        console.error("Errore analytics:", error);
-        res.status(500).json({ error: 'Errore nel recupero delle analitiche.' });
+        console.error('Analytics error:', error);
+        return res.status(500).json({ error: 'Errore nel recupero delle analitiche.' });
     }
 });
 
