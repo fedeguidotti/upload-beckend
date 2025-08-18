@@ -459,20 +459,21 @@ app.post('/forgot-password', async (req, res) => {
         const restaurantDoc = snapshot.docs[0];
         const data = restaurantDoc.data();
         const resetToken = require('crypto').randomBytes(32).toString('hex');
-        const resetExpires = new Date(Date.now() + 3600000);
+        const resetExpires = new Date(Date.now() + 3600000); // 1 ora
         await restaurantDoc.ref.update({ resetToken, resetTokenExpires: resetExpires });
 
         const email = data.email;
         let maskedEmail = 'email non disponibile';
         if (email && email.includes('@')) {
             const [localPart, domain] = email.split('@');
-            maskedEmail =
-                localPart.slice(0,2) + '*'.repeat(Math.max(0, localPart.length-2)) + '@' + domain;
+            maskedEmail = localPart.slice(0,2) + '*'.repeat(Math.max(0, localPart.length-2)) + '@' + domain;
         }
 
-        const resetLink = `https://yourapp.com/reset-password.html?token=${resetToken}`;
+        // Costruisci link dinamico basato su variabile di ambiente o fallback
+        const baseFrontEnd = process.env.FRONTEND_BASE_URL || 'https://your-frontend-domain.com';
+        const resetLink = `${baseFrontEnd.replace(/\/$/, '')}/reset-password.html?token=${resetToken}`;
         const subject = 'Reset Password - Pannello Ristorante';
-        const body = `Ciao,\n\nHai richiesto un reset password.\nUsa il seguente link (valido 1 ora):\n${resetLink}\n\nSe non hai richiesto tu questa operazione ignora la mail.`;
+        const body = `Ciao,\n\nHai richiesto un reset password.\nLink valido 1 ora:\n${resetLink}\n\nIn alternativa puoi copiare questo codice di reset e incollarlo nella pagina: \n${resetToken}\n\nSe non hai richiesto tu questa operazione ignora la mail.`;
 
         if (mailer) {
             await mailer.sendMail({
@@ -761,7 +762,7 @@ app.put('/restaurant/:restaurantId', upload.single('logo'), async (req, res) => 
 app.get('/restaurants', async (req, res) => {
     try {
         const snapshot = await db.collection('ristoranti').get();
-        const restaurants = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const restaurants = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         res.json(restaurants);
     } catch (error) {
         res.status(500).json({ error: 'Impossibile recuperare i ristoranti.' });
@@ -911,6 +912,7 @@ app.get('/global-stats', async (req, res) => {
             });
 
             allStats.push({
+                id: restaurant.id, // necessario per aprire analitiche specifiche nel pannello admin
                 name: restaurant.nomeRistorante,
                 totalRevenue, sessionCount, dishesSold
             });
