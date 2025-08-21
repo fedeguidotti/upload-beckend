@@ -293,6 +293,42 @@ app.post('/update-categories-order/:restaurantId', async (req, res) => {
     }
 });
 
+// Nuovo endpoint per aggiornare una categoria (nome e stato)
+app.put('/update-category/:restaurantId/:categoryId', async (req, res) => {
+    const { restaurantId, categoryId } = req.params;
+    const { name, isActive } = req.body;
+
+    if (!name || typeof isActive !== 'boolean') {
+        return res.status(400).json({ error: 'Nome e stato attivo sono obbligatori.' });
+    }
+
+    try {
+        const categoryRef = db.collection(`ristoranti/${restaurantId}/menuCategories`).doc(categoryId);
+        await categoryRef.update({ name, isActive });
+
+        // Se la categoria viene disattivata, disattiva tutti i piatti in quella categoria
+        if (!isActive) {
+            const menuSnapshot = await db.collection(`ristoranti/${restaurantId}/menu`)
+                .where('category', '==', name)
+                .get();
+            
+            const batch = db.batch();
+            menuSnapshot.docs.forEach(doc => {
+                batch.update(doc.ref, { isAvailable: false });
+            });
+            await batch.commit();
+        }
+
+        res.json({ 
+            success: true, 
+            message: isActive ? 'Categoria aggiornata!' : 'Categoria e piatti associati disattivati!' 
+        });
+    } catch (error) {
+        console.error("Errore aggiornamento categoria:", error);
+        res.status(500).json({ error: 'Errore interno del server.' });
+    }
+});
+
 // --- ROTTE GESTIONE PIATTI ---
 app.post('/add-dish/:restaurantId', upload.single('photo'), async (req, res) => {
     const { restaurantId } = req.params;
